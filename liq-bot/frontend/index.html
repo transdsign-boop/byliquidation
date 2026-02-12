@@ -1,0 +1,1068 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LIQ BOT — Dashboard</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&family=Outfit:wght@300;400;600;700&display=swap');
+
+  :root {
+    --bg: #0a0a0f;
+    --surface: #12121a;
+    --surface2: #1a1a26;
+    --border: #2a2a3a;
+    --text: #e0e0e8;
+    --text-dim: #6a6a80;
+    --green: #00ff88;
+    --green-dim: #00ff8830;
+    --red: #ff3366;
+    --red-dim: #ff336630;
+    --cyan: #00d4ff;
+    --yellow: #ffcc00;
+    --mono: 'JetBrains Mono', monospace;
+    --sans: 'Outfit', sans-serif;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--mono);
+    font-size: 13px;
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  /* Scanline overlay */
+  body::after {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background: repeating-linear-gradient(
+      0deg,
+      transparent,
+      transparent 2px,
+      rgba(0, 0, 0, 0.03) 2px,
+      rgba(0, 0, 0, 0.03) 4px
+    );
+    pointer-events: none;
+    z-index: 1000;
+  }
+
+  .header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 16px 24px;
+    border-bottom: 1px solid var(--border);
+    background: var(--surface);
+  }
+
+  .logo {
+    font-family: var(--sans);
+    font-weight: 700;
+    font-size: 20px;
+    letter-spacing: 2px;
+    color: var(--green);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .logo .dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--green);
+    animation: pulse 2s infinite;
+  }
+
+  .logo .dot.disconnected {
+    background: var(--red);
+    animation: none;
+  }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 1; box-shadow: 0 0 6px var(--green); }
+    50% { opacity: 0.4; box-shadow: none; }
+  }
+
+  .header-right {
+    display: flex;
+    gap: 20px;
+    align-items: center;
+    color: var(--text-dim);
+    font-size: 11px;
+  }
+
+  .threshold-control {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .threshold-control label {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--text-dim);
+  }
+
+  .threshold-control input {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    color: var(--yellow);
+    font-family: var(--mono);
+    font-size: 12px;
+    font-weight: 600;
+    padding: 4px 8px;
+    width: 90px;
+    border-radius: 3px;
+    text-align: right;
+  }
+
+  .threshold-control input:focus {
+    outline: none;
+    border-color: var(--yellow);
+  }
+
+  .tag-maker {
+    font-size: 9px;
+    font-weight: 600;
+    padding: 1px 4px;
+    border-radius: 2px;
+    background: var(--green-dim);
+    color: var(--green);
+    letter-spacing: 0.5px;
+  }
+
+  .tag-taker {
+    font-size: 9px;
+    font-weight: 600;
+    padding: 1px 4px;
+    border-radius: 2px;
+    background: var(--red-dim);
+    color: var(--red);
+    letter-spacing: 0.5px;
+  }
+
+  .order-toggle {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    color: var(--green);
+    font-family: var(--mono);
+    font-size: 11px;
+    font-weight: 600;
+    padding: 4px 10px;
+    border-radius: 3px;
+    cursor: pointer;
+    min-width: 46px;
+    text-align: center;
+    transition: all 0.15s;
+  }
+
+  .order-toggle:hover {
+    border-color: var(--text-dim);
+  }
+
+  .order-toggle.market {
+    color: var(--yellow);
+  }
+
+  .network-badge {
+    padding: 3px 10px;
+    border-radius: 3px;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+  }
+
+  .network-badge.testnet { background: var(--yellow); color: #000; }
+  .network-badge.demo { background: var(--cyan); color: #000; }
+  .network-badge.mainnet { background: var(--red); color: #fff; }
+
+  .account-switch-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 24px;
+    background: var(--surface2);
+    border-bottom: 1px solid var(--border);
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--text-dim);
+  }
+
+  .account-switch-bar input {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    color: var(--text);
+    font-family: var(--mono);
+    font-size: 12px;
+    padding: 4px 8px;
+    border-radius: 3px;
+    width: 180px;
+  }
+
+  .account-switch-bar input:focus { outline: none; border-color: var(--cyan); }
+
+  .account-switch-bar button {
+    background: var(--surface);
+    border: 1px solid var(--cyan);
+    color: var(--cyan);
+    font-family: var(--mono);
+    font-size: 11px;
+    font-weight: 600;
+    padding: 4px 14px;
+    border-radius: 3px;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+
+  .account-switch-bar button:hover { background: var(--cyan); color: var(--bg); }
+
+  .account-switch-bar #switchStatus {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0;
+    text-transform: none;
+  }
+
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    gap: 1px;
+    background: var(--border);
+    margin: 1px;
+  }
+
+  .account-bar {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 1px;
+    background: var(--border);
+    margin: 1px 1px 0 1px;
+  }
+
+  .account-card {
+    background: var(--surface2);
+    padding: 14px 24px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .account-label {
+    font-size: 9px;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+  }
+
+  .account-value {
+    font-size: 18px;
+    font-weight: 600;
+    font-family: var(--sans);
+    color: var(--text);
+  }
+
+  .stat-card {
+    background: var(--surface);
+    padding: 20px 24px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .stat-label {
+    font-size: 10px;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+  }
+
+  .stat-value {
+    font-size: 28px;
+    font-weight: 700;
+    font-family: var(--sans);
+  }
+
+  .stat-value.green { color: var(--green); }
+  .stat-value.red { color: var(--red); }
+  .stat-value.cyan { color: var(--cyan); }
+
+  .main-content {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1px;
+    background: var(--border);
+    margin-top: 1px;
+  }
+
+  .panel {
+    background: var(--surface);
+    display: flex;
+    flex-direction: column;
+    max-height: 70vh;
+  }
+
+  .panel.compact {
+    max-height: 25vh;
+  }
+
+  .panel-header {
+    padding: 14px 20px;
+    border-bottom: 1px solid var(--border);
+    font-size: 11px;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-shrink: 0;
+  }
+
+  .panel-header .count {
+    color: var(--cyan);
+    font-weight: 600;
+  }
+
+  .panel-body {
+    overflow-y: auto;
+    flex: 1;
+  }
+
+  .panel-body::-webkit-scrollbar { width: 4px; }
+  .panel-body::-webkit-scrollbar-track { background: transparent; }
+  .panel-body::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+  /* Trade rows */
+  .trade-row {
+    display: grid;
+    grid-template-columns: 85px 95px 50px 1fr 80px 72px 72px 80px 65px 55px;
+    gap: 6px;
+    padding: 10px 20px;
+    border-bottom: 1px solid var(--border);
+    font-size: 12px;
+    align-items: center;
+    animation: fadeIn 0.2s ease;
+  }
+
+  @keyframes fadeIn {
+    from { opacity: 0; background: var(--green-dim); }
+    to { opacity: 1; background: transparent; }
+  }
+
+  .trade-row:hover { background: var(--surface2); }
+
+  .trade-row .symbol { color: var(--cyan); font-weight: 600; }
+  .trade-row .side-buy { color: var(--green); }
+  .trade-row .side-sell { color: var(--red); }
+  .trade-row .status-filled { color: var(--green); }
+  .trade-row .status-skipped { color: var(--text-dim); }
+  .trade-row .status-failed { color: var(--red); }
+  .trade-row .time { color: var(--text-dim); }
+  .trade-row .exec-time { color: var(--yellow); }
+
+  /* Liquidation feed */
+  .liq-row {
+    display: grid;
+    grid-template-columns: 80px 100px 80px 1fr 80px;
+    gap: 10px;
+    padding: 8px 20px;
+    border-bottom: 1px solid var(--border);
+    font-size: 12px;
+    align-items: center;
+    opacity: 0.45;
+    animation: liqFadeIn 0.3s ease;
+  }
+
+  .liq-row.qualifies {
+    opacity: 1;
+    border-left: 3px solid var(--yellow);
+    background: rgba(255, 204, 0, 0.05);
+    animation: liqFlash 0.5s ease;
+  }
+
+  @keyframes liqFadeIn {
+    from { opacity: 0; }
+    to { opacity: 0.45; }
+  }
+
+  @keyframes liqFlash {
+    from { background: rgba(255, 204, 0, 0.2); }
+    to { background: rgba(255, 204, 0, 0.05); }
+  }
+
+  .liq-row .value { color: var(--yellow); font-weight: 500; }
+  .liq-row .symbol { color: var(--cyan); }
+
+  /* Position rows */
+  .pos-row {
+    display: grid;
+    grid-template-columns: 100px 60px 90px 90px 90px 75px 75px 75px 1fr;
+    gap: 8px;
+    padding: 12px 20px;
+    border-bottom: 1px solid var(--border);
+    font-size: 12px;
+    align-items: center;
+  }
+
+  .col-header {
+    display: grid;
+    gap: 10px;
+    padding: 8px 20px;
+    border-bottom: 1px solid var(--border);
+    font-size: 9px;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    flex-shrink: 0;
+    background: var(--surface2);
+  }
+
+  .col-header.pos-cols {
+    grid-template-columns: 100px 60px 90px 90px 90px 75px 75px 75px 1fr;
+    gap: 8px;
+  }
+
+  .col-header.trade-cols {
+    grid-template-columns: 85px 95px 50px 1fr 80px 72px 72px 80px 65px 55px;
+  }
+
+  .pos-row .symbol { color: var(--cyan); font-weight: 600; }
+
+  .countdown { font-weight: 600; font-variant-numeric: tabular-nums; }
+  .countdown.warning { color: var(--yellow); }
+  .countdown.critical { color: var(--red); animation: pulse 1s infinite; }
+
+  .empty-state {
+    padding: 40px 20px;
+    text-align: center;
+    color: var(--text-dim);
+    font-size: 12px;
+  }
+
+  /* Full-width panels below */
+  .bottom-panels {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 1px;
+    background: var(--border);
+    margin-top: 1px;
+  }
+
+  .positions-panel {
+    background: var(--surface);
+    max-height: 35vh;
+    display: flex;
+    flex-direction: column;
+  }
+
+  @media (max-width: 900px) {
+    .grid { grid-template-columns: repeat(2, 1fr); }
+    .account-bar { grid-template-columns: repeat(2, 1fr); }
+    .main-content { grid-template-columns: 1fr; }
+    .trade-row { grid-template-columns: 75px 85px 45px 1fr 70px 65px 65px 70px 55px 45px; }
+  }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div class="logo">
+    <div class="dot" id="statusDot"></div>
+    LIQ BOT
+  </div>
+  <div class="header-right">
+    <div class="threshold-control">
+      <label>Min Liq $</label>
+      <input type="number" id="minLiqInput" min="0" step="1000" value="10000">
+    </div>
+    <div class="threshold-control">
+      <label>Min Vol $</label>
+      <input type="number" id="minVolInput" min="0" step="1000000" value="5000000">
+    </div>
+    <div class="threshold-control">
+      <label>Timed Exit (s)</label>
+      <input type="number" id="maxHoldInput" min="0" step="5" value="60">
+    </div>
+    <div class="threshold-control">
+      <label>Max Pos</label>
+      <input type="number" id="maxPosInput" min="1" step="1" value="5">
+    </div>
+    <div class="threshold-control">
+      <label>Trail ATR x</label>
+      <input type="number" id="trailAtrInput" min="0.1" step="0.1" value="0.5">
+    </div>
+    <div class="threshold-control">
+      <label>ATR Int (m)</label>
+      <input type="number" id="atrIntervalInput" min="1" step="1" value="1">
+    </div>
+    <div class="threshold-control">
+      <label>Entry</label>
+      <button class="order-toggle" id="entryTypeToggle">LMT</button>
+    </div>
+    <div class="threshold-control">
+      <label>TP</label>
+      <button class="order-toggle" id="tpTypeToggle">LMT</button>
+    </div>
+    <div class="threshold-control">
+      <label>Exit</label>
+      <button class="order-toggle" id="exitTypeToggle">LMT</button>
+    </div>
+    <span class="network-badge" id="networkBadge">—</span>
+    <span id="clockDisplay">--:--:--</span>
+  </div>
+</div>
+
+<div class="account-switch-bar">
+  <label>API Key</label>
+  <input type="text" id="switchApiKey" placeholder="API Key" autocomplete="off">
+  <label>Secret</label>
+  <input type="password" id="switchApiSecret" placeholder="API Secret" autocomplete="off">
+  <button id="switchAccountBtn">Switch Account</button>
+  <span id="switchStatus"></span>
+</div>
+
+<div class="account-bar">
+  <div class="account-card">
+    <div class="account-label">Wallet Balance</div>
+    <div class="account-value" id="walletBalance">—</div>
+  </div>
+  <div class="account-card">
+    <div class="account-label">Equity</div>
+    <div class="account-value" id="totalEquity">—</div>
+  </div>
+  <div class="account-card">
+    <div class="account-label">Available Balance</div>
+    <div class="account-value" id="availableBalance">—</div>
+  </div>
+  <div class="account-card">
+    <div class="account-label">Unrealised PnL</div>
+    <div class="account-value" id="unrealisedPnl">—</div>
+  </div>
+</div>
+
+<div class="grid">
+  <div class="stat-card">
+    <div class="stat-label">Net PnL (USDT)</div>
+    <div class="stat-value" id="totalPnl">0.00</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Gross PnL (USDT)</div>
+    <div class="stat-value" id="totalGrossPnl">0.00</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Total Fees (USDT)</div>
+    <div class="stat-value red" id="totalFees">0.00</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Win Rate</div>
+    <div class="stat-value cyan" id="winRate">0%</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Trades / Open</div>
+    <div class="stat-value" id="tradeCount" style="color:var(--text)">0 / 0</div>
+  </div>
+</div>
+
+<div class="main-content">
+  <!-- Open Positions -->
+  <div class="panel">
+    <div class="panel-header">
+      Open Positions <span class="count" id="posCount">0</span>
+    </div>
+    <div class="col-header pos-cols">
+      <span>Symbol</span>
+      <span>Side</span>
+      <span>TP</span>
+      <span>SL</span>
+      <span>Trail</span>
+      <span>uPnL</span>
+      <span>ATR</span>
+      <span>Remaining</span>
+      <span>Hold Time</span>
+    </div>
+    <div class="panel-body" id="positionsBody">
+      <div class="empty-state">No open positions</div>
+    </div>
+  </div>
+
+  <!-- Live Liquidation Feed -->
+  <div class="panel compact">
+    <div class="panel-header">
+      Live Liquidations <span class="count" id="liqCount">0</span>
+    </div>
+    <div class="panel-body" id="liqFeedBody">
+      <div class="empty-state">Waiting for liquidation events...</div>
+    </div>
+  </div>
+</div>
+
+<div class="bottom-panels">
+  <div class="positions-panel">
+    <div class="panel-header">
+      Trade Log <span class="count" id="tradeLogCount">0</span>
+    </div>
+    <div class="col-header trade-cols">
+      <span>Time</span>
+      <span>Symbol</span>
+      <span>Side</span>
+      <span>Exit Type</span>
+      <span>Gross PnL</span>
+      <span>Open Fee</span>
+      <span>Close Fee</span>
+      <span>Net PnL</span>
+      <span>Liq Size</span>
+      <span>Hold</span>
+    </div>
+    <div class="panel-body" id="tradeLogBody">
+      <div class="empty-state">Waiting for trades...</div>
+    </div>
+  </div>
+</div>
+
+<script>
+  // --- SSE Connection ---
+  let liqCount = 0;
+  const liqFeed = [];
+  const MAX_FEED = 200;
+
+  function connect() {
+    const evtSource = new EventSource('/api/stream');
+
+    evtSource.onmessage = (event) => {
+      const msg = JSON.parse(event.data);
+
+      if (msg.type === 'connected') {
+        document.getElementById('statusDot').classList.remove('disconnected');
+      }
+
+      if (msg.type === 'stats') {
+        updateStats(msg.data);
+      }
+
+      if (msg.type === 'positions') {
+        updatePositions(msg.data);
+      }
+
+      if (msg.type === 'account') {
+        updateAccount(msg.data);
+      }
+
+      if (msg.type === 'liquidation') {
+        addLiquidation(msg.data);
+      }
+    };
+
+    evtSource.onerror = () => {
+      document.getElementById('statusDot').classList.add('disconnected');
+      evtSource.close();
+      setTimeout(connect, 3000);
+    };
+  }
+
+  function updateAccount(acct) {
+    const fmt = (v) => parseFloat(v || 0).toFixed(2);
+    document.getElementById('walletBalance').textContent = '$' + fmt(acct.totalWalletBalance);
+    document.getElementById('totalEquity').textContent = '$' + fmt(acct.totalEquity);
+    document.getElementById('availableBalance').textContent = '$' + fmt(acct.totalAvailableBalance);
+
+    const upl = parseFloat(acct.totalPerpUPL || 0);
+    const uplEl = document.getElementById('unrealisedPnl');
+    uplEl.textContent = (upl >= 0 ? '+' : '') + fmt(acct.totalPerpUPL);
+    uplEl.style.color = upl >= 0 ? 'var(--green)' : 'var(--red)';
+  }
+
+  function updateStats(stats) {
+    const pnlEl = document.getElementById('totalPnl');
+    const pnl = parseFloat(stats.totalPnl);
+    pnlEl.textContent = (pnl >= 0 ? '+' : '') + pnl.toFixed(4);
+    pnlEl.className = 'stat-value ' + (pnl >= 0 ? 'green' : 'red');
+
+    const grossEl = document.getElementById('totalGrossPnl');
+    const gross = parseFloat(stats.totalGrossPnl || 0);
+    grossEl.textContent = (gross >= 0 ? '+' : '') + gross.toFixed(4);
+    grossEl.className = 'stat-value ' + (gross >= 0 ? 'green' : 'red');
+
+    document.getElementById('winRate').textContent = stats.winRate + '%';
+    document.getElementById('tradeCount').textContent = `${stats.totalTrades} / ${stats.openPositions}`;
+
+    const fees = parseFloat(stats.totalFees || 0);
+    document.getElementById('totalFees').textContent = fees.toFixed(4);
+  }
+
+  let maxHoldSeconds = 60; // default, updated from config
+
+  function updatePositions(positions) {
+    const body = document.getElementById('positionsBody');
+    document.getElementById('posCount').textContent = positions.length;
+
+    if (positions.length === 0) {
+      body.innerHTML = '<div class="empty-state">No open positions</div>';
+      return;
+    }
+
+    body.innerHTML = positions.map(p => {
+      const holdSec = (Date.now() - p.openTime) / 1000;
+      const remaining = Math.max(0, maxHoldSeconds - holdSec);
+      const countdownClass = remaining <= 10 ? 'critical' : remaining <= 30 ? 'warning' : '';
+      const atrDisplay = p.atr ? p.atr.toFixed(6) : '—';
+      const trailDisplay = p.trailingStop || '—';
+      const methodTag = p.tpMethod === 'ATR' ? 'ATR' : 'FIX';
+
+      const uPnl = p.unrealisedPnl || 0;
+      const uPnlColor = uPnl >= 0 ? 'var(--green)' : 'var(--red)';
+      const uPnlDisplay = (uPnl >= 0 ? '+' : '') + uPnl.toFixed(4);
+
+      return `
+        <div class="pos-row">
+          <span class="symbol">${p.symbol}</span>
+          <span class="${p.side === 'Buy' ? 'side-buy' : 'side-sell'}">${p.side}</span>
+          <span>${p.tpPrice || '—'} <span style="color:var(--text-dim);font-size:10px">[${methodTag}]</span></span>
+          <span style="color:var(--red)">${p.slPrice || '—'}</span>
+          <span style="color:var(--yellow)">${trailDisplay}</span>
+          <span style="color:${uPnlColor};font-weight:600">${uPnlDisplay}</span>
+          <span style="color:var(--text-dim)">${atrDisplay}</span>
+          <span class="countdown ${countdownClass}">${remaining.toFixed(0)}s</span>
+          <span style="color:var(--text-dim)">${holdSec.toFixed(0)}s</span>
+        </div>
+      `;
+    }).join('');
+  }
+
+  function addLiquidation(liq) {
+    liqCount++;
+    document.getElementById('liqCount').textContent = liqCount;
+
+    liqFeed.unshift(liq);
+    if (liqFeed.length > MAX_FEED) liqFeed.pop();
+
+    const body = document.getElementById('liqFeedBody');
+    const row = document.createElement('div');
+    row.className = 'liq-row' + (liq.qualifies ? ' qualifies' : '');
+    const blockedTag = liq.blocked
+      ? `<span style="font-size:9px;font-weight:600;padding:1px 4px;border-radius:2px;background:var(--red-dim);color:var(--red);letter-spacing:0.5px;margin-left:4px">${liq.blocked}</span>`
+      : '';
+    row.innerHTML = `
+      <span style="color:var(--text-dim)">${new Date(liq.timestamp).toLocaleTimeString()}</span>
+      <span class="symbol">${liq.symbol}${blockedTag}</span>
+      <span class="${liq.side === 'Buy' ? 'side-sell' : 'side-buy'}">${liq.side === 'Buy' ? 'LONG LIQ' : 'SHORT LIQ'}</span>
+      <span>@ ${liq.price}</span>
+      <span class="value">$${liq.usdValue >= 1000 ? (liq.usdValue / 1000).toFixed(1) + 'K' : liq.usdValue.toFixed(0)}</span>
+    `;
+
+    if (body.firstChild?.classList?.contains('empty-state')) {
+      body.innerHTML = '';
+    }
+    body.prepend(row);
+
+    // Trim DOM
+    while (body.children.length > MAX_FEED) {
+      body.removeChild(body.lastChild);
+    }
+  }
+
+  // Load trade log from closed PnL history (guaranteed complete data)
+  async function loadTradeLog() {
+    try {
+      const res = await fetch('/api/pnl');
+      const pnlData = await res.json();
+      const body = document.getElementById('tradeLogBody');
+      const trades = pnlData.history || [];
+
+      document.getElementById('tradeLogCount').textContent = trades.length;
+
+      if (trades.length === 0) {
+        body.innerHTML = '<div class="empty-state">No closed trades yet</div>';
+        return;
+      }
+
+      body.innerHTML = trades.map(t => {
+        // Net PnL = Bybit closedPnl (already net of fees)
+        const netPnl = t.pnl || 0;
+        // Gross PnL = net + fees (PnL before fee deductions)
+        const totalFees = (t.fees?.total || 0);
+        const grossPnl = t.grossPnl != null ? t.grossPnl : (netPnl + totalFees);
+        const grossClass = grossPnl >= 0 ? 'color:var(--green)' : 'color:var(--red)';
+        const grossDisplay = (grossPnl >= 0 ? '+' : '') + grossPnl.toFixed(4);
+        const netClass = netPnl >= 0 ? 'color:var(--green)' : 'color:var(--red)';
+        const netDisplay = (netPnl >= 0 ? '+' : '') + netPnl.toFixed(4);
+
+        // Open fee with maker/taker from Bybit isMaker field
+        const openFee = t.fees?.open || 0;
+        const entryIsMaker = t.entryIsMaker === true;
+        const entryTag = entryIsMaker ? 'tag-maker' : 'tag-taker';
+        const entryLabel = entryIsMaker ? 'MAKER' : 'TAKER';
+        const openFeeColor = openFee <= 0 ? 'var(--green)' : 'var(--red)';
+        const openFeeDisplay = openFee <= 0
+          ? '+' + Math.abs(openFee).toFixed(4)
+          : '-' + Math.abs(openFee).toFixed(4);
+
+        // Close fee with maker/taker from Bybit isMaker field
+        const closeFee = t.fees?.close || 0;
+        const exitIsMaker = t.exitIsMaker === true;
+        const exitTag = exitIsMaker ? 'tag-maker' : 'tag-taker';
+        const exitLabel = exitIsMaker ? 'MAKER' : 'TAKER';
+        const closeFeeColor = closeFee <= 0 ? 'var(--green)' : 'var(--red)';
+        const closeFeeDisplay = closeFee <= 0
+          ? '+' + Math.abs(closeFee).toFixed(4)
+          : '-' + Math.abs(closeFee).toFixed(4);
+
+        const liqVal = t.liqUsdValue || 0;
+        const liqDisplay = liqVal >= 1000 ? '$' + (liqVal / 1000).toFixed(1) + 'K' : '$' + liqVal.toFixed(0);
+        const holdSec = t.holdTimeMs ? (t.holdTimeMs / 1000).toFixed(0) + 's' : '—';
+
+        return `
+          <div class="trade-row">
+            <span class="time">${new Date(t.closedAt).toLocaleTimeString()}</span>
+            <span class="symbol">${t.symbol}</span>
+            <span class="${t.side === 'Buy' ? 'side-buy' : 'side-sell'}">${t.side}</span>
+            <span style="color:var(--text-dim)">${t.exitType} <span style="font-size:10px">[${t.tpMethod || '—'}]</span></span>
+            <span style="${grossClass};font-weight:600">${grossDisplay}</span>
+            <span style="color:${openFeeColor};font-size:11px">${openFeeDisplay} <span class="${entryTag}">${entryLabel}</span></span>
+            <span style="color:${closeFeeColor};font-size:11px">${closeFeeDisplay} <span class="${exitTag}">${exitLabel}</span></span>
+            <span style="${netClass};font-weight:600">${netDisplay}</span>
+            <span class="value">${liqDisplay}</span>
+            <span style="color:var(--text-dim)">${holdSec}</span>
+          </div>
+        `;
+      }).join('');
+    } catch (e) {}
+  }
+
+  // Load config
+  async function loadConfig() {
+    try {
+      const res = await fetch('/api/config');
+      const cfg = await res.json();
+      const badge = document.getElementById('networkBadge');
+      badge.textContent = cfg.network;
+      badge.className = 'network-badge ' + cfg.network;
+      if (cfg.maxHoldSeconds) {
+        maxHoldSeconds = cfg.maxHoldSeconds;
+        document.getElementById('maxHoldInput').value = cfg.maxHoldSeconds;
+      }
+      if (cfg.minLiqValueUsd) {
+        document.getElementById('minLiqInput').value = cfg.minLiqValueUsd;
+      }
+      if (cfg.minTurnover24h != null) {
+        document.getElementById('minVolInput').value = cfg.minTurnover24h;
+      }
+      if (cfg.maxPositions) {
+        document.getElementById('maxPosInput').value = cfg.maxPositions;
+      }
+      if (cfg.trailingAtrMultiplier) {
+        document.getElementById('trailAtrInput').value = cfg.trailingAtrMultiplier;
+      }
+      if (cfg.atrInterval) {
+        document.getElementById('atrIntervalInput').value = cfg.atrInterval;
+      }
+      // Order type toggles
+      setToggle('entryTypeToggle', cfg.entryOrderType || 'Limit');
+      setToggle('tpTypeToggle', cfg.tpOrderType || 'Limit');
+      setToggle('exitTypeToggle', cfg.timeExitOrderType || 'Limit');
+    } catch (e) {}
+  }
+
+  function setToggle(id, value) {
+    const btn = document.getElementById(id);
+    if (value === 'Market') {
+      btn.textContent = 'MKT';
+      btn.classList.add('market');
+    } else {
+      btn.textContent = 'LMT';
+      btn.classList.remove('market');
+    }
+    btn.dataset.value = value;
+  }
+
+  async function toggleOrderType(id, configField) {
+    const btn = document.getElementById(id);
+    const current = btn.dataset.value || 'Limit';
+    const next = current === 'Limit' ? 'Market' : 'Limit';
+    try {
+      const res = await fetch('/api/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ [configField]: next }),
+      });
+      const data = await res.json();
+      if (data.ok) {
+        setToggle(id, next);
+        btn.style.borderColor = 'var(--green)';
+        setTimeout(() => btn.style.borderColor = '', 1000);
+      }
+    } catch (err) {}
+  }
+
+  document.getElementById('entryTypeToggle').addEventListener('click', () => toggleOrderType('entryTypeToggle', 'entryOrderType'));
+  document.getElementById('tpTypeToggle').addEventListener('click', () => toggleOrderType('tpTypeToggle', 'tpOrderType'));
+  document.getElementById('exitTypeToggle').addEventListener('click', () => toggleOrderType('exitTypeToggle', 'timeExitOrderType'));
+
+  // Min liq threshold — update on change
+  document.getElementById('minLiqInput').addEventListener('change', async (e) => {
+    const val = parseFloat(e.target.value);
+    if (isNaN(val) || val < 0) return;
+    try {
+      const res = await fetch('/api/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ minLiqValueUsd: val }),
+      });
+      const data = await res.json();
+      if (data.ok) {
+        e.target.style.borderColor = 'var(--green)';
+        setTimeout(() => e.target.style.borderColor = '', 1000);
+      }
+    } catch (err) {}
+  });
+
+  // Min volume threshold — update on change
+  document.getElementById('minVolInput').addEventListener('change', async (e) => {
+    const val = parseFloat(e.target.value);
+    if (isNaN(val) || val < 0) return;
+    try {
+      const res = await fetch('/api/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ minTurnover24h: val }),
+      });
+      const data = await res.json();
+      if (data.ok) {
+        e.target.style.borderColor = 'var(--green)';
+        setTimeout(() => e.target.style.borderColor = '', 1000);
+      }
+    } catch (err) {}
+  });
+
+  // Max hold seconds — update on change
+  document.getElementById('maxHoldInput').addEventListener('change', async (e) => {
+    const val = parseFloat(e.target.value);
+    if (isNaN(val) || val < 0) return;
+    try {
+      const res = await fetch('/api/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ maxHoldSeconds: val }),
+      });
+      const data = await res.json();
+      if (data.ok) {
+        maxHoldSeconds = val;
+        e.target.style.borderColor = 'var(--green)';
+        setTimeout(() => e.target.style.borderColor = '', 1000);
+      }
+    } catch (err) {}
+  });
+
+  // ATR interval — update on change
+  document.getElementById('atrIntervalInput').addEventListener('change', async (e) => {
+    const val = e.target.value;
+    if (!val || parseInt(val) < 1) return;
+    try {
+      const res = await fetch('/api/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ atrInterval: val }),
+      });
+      const data = await res.json();
+      if (data.ok) {
+        e.target.style.borderColor = 'var(--green)';
+        setTimeout(() => e.target.style.borderColor = '', 1000);
+      }
+    } catch (err) {}
+  });
+
+  // Trailing ATR multiplier — update on change
+  document.getElementById('trailAtrInput').addEventListener('change', async (e) => {
+    const val = parseFloat(e.target.value);
+    if (isNaN(val) || val <= 0) return;
+    try {
+      const res = await fetch('/api/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ trailingAtrMultiplier: val }),
+      });
+      const data = await res.json();
+      if (data.ok) {
+        e.target.style.borderColor = 'var(--green)';
+        setTimeout(() => e.target.style.borderColor = '', 1000);
+      }
+    } catch (err) {}
+  });
+
+  // Max positions — update on change
+  document.getElementById('maxPosInput').addEventListener('change', async (e) => {
+    const val = parseInt(e.target.value);
+    if (isNaN(val) || val < 1) return;
+    try {
+      const res = await fetch('/api/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ maxPositions: val }),
+      });
+      const data = await res.json();
+      if (data.ok) {
+        e.target.style.borderColor = 'var(--green)';
+        setTimeout(() => e.target.style.borderColor = '', 1000);
+      }
+    } catch (err) {}
+  });
+
+  // Account switch
+  document.getElementById('switchAccountBtn').addEventListener('click', async () => {
+    const apiKey = document.getElementById('switchApiKey').value.trim();
+    const apiSecret = document.getElementById('switchApiSecret').value.trim();
+    const statusEl = document.getElementById('switchStatus');
+    if (!apiKey || !apiSecret) {
+      statusEl.textContent = 'Enter both key & secret';
+      statusEl.style.color = 'var(--red)';
+      return;
+    }
+    statusEl.textContent = 'Switching...';
+    statusEl.style.color = 'var(--yellow)';
+    try {
+      const res = await fetch('/api/account-switch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ apiKey, apiSecret }),
+      });
+      const data = await res.json();
+      if (data.ok) {
+        statusEl.textContent = 'Switched! Balance: $' + parseFloat(data.balance || 0).toFixed(2);
+        statusEl.style.color = 'var(--green)';
+        loadTradeLog();
+        loadConfig();
+      } else {
+        statusEl.textContent = data.error || 'Switch failed';
+        statusEl.style.color = 'var(--red)';
+      }
+    } catch (err) {
+      statusEl.textContent = 'Network error';
+      statusEl.style.color = 'var(--red)';
+    }
+    setTimeout(() => { statusEl.textContent = ''; }, 5000);
+  });
+
+  // Clock
+  setInterval(() => {
+    document.getElementById('clockDisplay').textContent =
+      new Date().toLocaleTimeString();
+  }, 1000);
+
+  // Refresh trade log periodically
+  setInterval(loadTradeLog, 5000);
+
+  // Init
+  loadConfig();
+  loadTradeLog();
+  connect();
+</script>
+</body>
+</html>

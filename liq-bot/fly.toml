@@ -1,0 +1,28 @@
+# fly.toml — deploy with: fly launch / fly deploy
+app = "bybit-liq-bot"
+primary_region = "nrt"  # Tokyo — low latency to Bybit (matching engine in Asia)
+
+[build]
+
+[http_service]
+  internal_port = 3000
+  force_https = true
+  auto_stop_machines = false   # KEEP RUNNING — this is a trading bot
+  auto_start_machines = true
+  min_machines_running = 1
+
+[env]
+  NODE_ENV = "production"
+  DASHBOARD_PORT = "3000"
+  DATA_DIR = "/data"
+
+[mounts]
+  source = "liq_bot_data"
+  destination = "/data"
+
+# Set secrets via CLI:
+# fly secrets set BYBIT_API_KEY=xxx BYBIT_API_SECRET=xxx NETWORK=mainnet
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"
