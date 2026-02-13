@@ -568,6 +568,10 @@
       <input type="number" id="maxPosInput" min="1" step="1" value="5">
     </div>
     <div class="threshold-control">
+      <label>Leverage</label>
+      <input type="number" id="leverageInput" min="1" max="100" step="1" value="5">
+    </div>
+    <div class="threshold-control">
       <label>Trail ATR x</label>
       <input type="number" id="trailAtrInput" min="0.1" step="0.1" value="0.5">
     </div>
@@ -793,9 +797,11 @@
     }
 
     body.innerHTML = positions.map(p => {
-      const holdSec = (Date.now() - p.openTime) / 1000;
-      const remaining = Math.max(0, maxHoldSeconds - holdSec);
-      const countdownClass = remaining <= 10 ? 'critical' : remaining <= 30 ? 'warning' : '';
+      // Defensive: handle missing/invalid openTime
+      const openTime = p.openTime && p.openTime > 0 ? p.openTime : Date.now();
+      const holdSec = Math.max(0, (Date.now() - openTime) / 1000);
+      const remaining = maxHoldSeconds > 0 ? Math.max(0, maxHoldSeconds - holdSec) : Infinity;
+      const countdownClass = maxHoldSeconds === 0 ? '' : (remaining <= 10 ? 'critical' : remaining <= 30 ? 'warning' : '');
       const atrDisplay = p.atr ? p.atr.toFixed(6) : '—';
       const trailDisplay = p.trailingStop || '—';
       const methodTag = p.tpMethod === 'ATR' ? 'ATR' : 'FIX';
@@ -820,7 +826,7 @@
           <span style="color:var(--yellow)">${ml}Trail ${mle}${trailDisplay}</span>
           <span style="color:${uPnlColor};font-weight:600">${ml}uPnL ${mle}${uPnlDisplay}</span>
           <span style="color:var(--text-dim)">${ml}ATR ${mle}${atrDisplay}</span>
-          <span class="countdown ${countdownClass}">${ml}Left ${mle}${remaining.toFixed(0)}s</span>
+          <span class="countdown ${countdownClass}">${ml}Left ${mle}${maxHoldSeconds === 0 ? 'OFF' : remaining.toFixed(0) + 's'}</span>
           <span style="color:var(--text-dim)">${ml}Hold ${mle}${holdSec.toFixed(0)}s</span>
         </div>
       `;
@@ -937,7 +943,7 @@
       const badge = document.getElementById('networkBadge');
       badge.textContent = cfg.network;
       badge.className = 'network-badge ' + cfg.network;
-      if (cfg.maxHoldSeconds) {
+      if (cfg.maxHoldSeconds != null) {
         maxHoldSeconds = cfg.maxHoldSeconds;
         document.getElementById('maxHoldInput').value = cfg.maxHoldSeconds;
       }
@@ -949,6 +955,9 @@
       }
       if (cfg.maxPositions) {
         document.getElementById('maxPosInput').value = cfg.maxPositions;
+      }
+      if (cfg.leverage) {
+        document.getElementById('leverageInput').value = cfg.leverage;
       }
       if (cfg.trailingAtrMultiplier) {
         document.getElementById('trailAtrInput').value = cfg.trailingAtrMultiplier;
@@ -1107,6 +1116,24 @@
     } catch (err) {}
   });
 
+  // Leverage — update on change
+  document.getElementById('leverageInput').addEventListener('change', async (e) => {
+    const val = parseInt(e.target.value);
+    if (isNaN(val) || val < 1 || val > 100) return;
+    try {
+      const res = await fetch('/api/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ leverage: val }),
+      });
+      const data = await res.json();
+      if (data.ok) {
+        e.target.style.borderColor = 'var(--green)';
+        setTimeout(() => e.target.style.borderColor = '', 1000);
+      }
+    } catch (err) {}
+  });
+
 
   // Format time in LA timezone
   const LA_TZ = 'America/Los_Angeles';
@@ -1156,11 +1183,12 @@
   setInterval(loadTradeLog, 5000);
   setInterval(loadActivity, 3000);
 
-  // Init
-  loadConfig();
+  // Init - load config first, then connect SSE
+  loadConfig().then(() => {
+    connect();
+  });
   loadTradeLog();
   loadActivity();
-  connect();
 </script>
 </body>
 </html>

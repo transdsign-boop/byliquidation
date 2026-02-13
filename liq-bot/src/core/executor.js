@@ -157,6 +157,19 @@ export async function executeTrade(liqEvent) {
   const { symbol, side, price, usdValue } = liqEvent;
   const startTime = Date.now();
 
+  // Granular latency tracking
+  const timing = {
+    preChecks: 0,
+    leverage: 0,
+    atr: 0,
+    orderbook: 0,
+    orderPlace: 0,
+    orderFillWait: 0,
+    positionFetch: 0,
+    tpSlSet: 0,
+    trailSet: 0,
+  };
+
   // Check max positions (count pending + active)
   if (activePositions.size + pendingSymbols.size >= config.maxPositions) {
     logTrade(liqEvent, 'SKIPPED', 'Max positions reached', 0);
@@ -220,6 +233,8 @@ export async function executeTrade(liqEvent) {
       return null;
     }
 
+    timing.preChecks = Date.now() - startTime;
+
     // Counter-trade direction:
     // If longs got liquidated (side='Buy'), price dumped -> we BUY (expect bounce)
     // If shorts got liquidated (side='Sell'), price pumped -> we SELL (expect pullback)
@@ -242,15 +257,18 @@ export async function executeTrade(liqEvent) {
     }
 
     // Set one-way mode and leverage (only once per symbol)
+    const leverageStart = Date.now();
     if (!leverageSet.has(symbol)) {
       await switchToOneWayMode(symbol).catch(() => {});
       const lev = Math.min(config.leverage, inst.maxLeverage);
       await setLeverage(symbol, lev).catch(() => {});
       leverageSet.add(symbol);
     }
+    timing.leverage = Date.now() - leverageStart;
 
     // --- Calculate TP and SL prices (ATR-based with fallback) ---
 
+    const atrStart = Date.now();
     let atrValue = null;
     let tpPrice, trailingStopDist;
     let tpMethod = 'fixed';
@@ -261,6 +279,7 @@ export async function executeTrade(liqEvent) {
     } catch (err) {
       console.error(`[EXECUTOR] ATR fetch error for ${symbol}:`, err.message);
     }
+    timing.atr = Date.now() - atrStart;
 
     if (atrValue && atrValue > 0) {
       // ATR-based TP: entry ± 1.5 × ATR
@@ -332,6 +351,7 @@ export async function executeTrade(liqEvent) {
     if (entryType === 'Limit') {
       // Limit PostOnly at best bid (Buy) / best ask (Sell) for maker fees
       let limitPrice = null;
+      const obStart = Date.now();
       try {
         const ob = await getOrderbook(symbol, 1);
         if (ob.retCode === 0 && ob.result) {
@@ -343,7 +363,9 @@ export async function executeTrade(liqEvent) {
       } catch (err) {
         console.warn(`[EXECUTOR] Orderbook error for ${symbol}:`, err.message);
       }
+      timing.orderbook = Date.now() - obStart;
 
+      const orderStart = Date.now();
       if (!limitPrice) {
         // Fallback to market if orderbook unavailable
         if (isTradeWsReady()) {
@@ -372,6 +394,7 @@ export async function executeTrade(liqEvent) {
           orderResult = await placeOrder(symbol, tradeSide, qty, 'Limit', limitParams);
           orderVia = 'REST(limit)';
         }
+        timing.orderPlace = Date.now() - orderStart;
 
         if (orderResult.retCode !== 0) {
           console.error(`[EXECUTOR] Limit rejected for ${symbol}: ${orderResult.retMsg} (code ${orderResult.retCode})`);
@@ -381,6 +404,7 @@ export async function executeTrade(liqEvent) {
 
         // Wait for fill — PostOnly may sit on the book
         const limitOrderId = orderResult.result.orderId;
+        const fillWaitStart = Date.now();
         await new Promise(r => setTimeout(r, 2000));
 
         try {
@@ -396,11 +420,13 @@ export async function executeTrade(liqEvent) {
         } catch (err) {
           console.warn(`[EXECUTOR] Order status check failed for ${symbol}:`, err.message);
         }
+        timing.orderFillWait = Date.now() - fillWaitStart;
 
         console.log(`[EXECUTOR] ${symbol} limit order filled @ ${limitPrice} (maker fee)`);
       }
     } else {
       // Market order (existing flow)
+      const orderStart = Date.now();
       if (isTradeWsReady()) {
         try {
           orderResult = await placeOrderWs(symbol, tradeSide, qty);
@@ -413,6 +439,7 @@ export async function executeTrade(liqEvent) {
         orderResult = await placeOrder(symbol, tradeSide, qty);
         orderVia = 'REST';
       }
+      timing.orderPlace = Date.now() - orderStart;
     }
 
     const execTime = Date.now() - startTime;
@@ -426,6 +453,7 @@ export async function executeTrade(liqEvent) {
     const orderId = orderResult.result.orderId;
 
     // Fetch real fill price from Bybit position data
+    const posFetchStart = Date.now();
     let fillPrice = price; // fallback to liq price
     try {
       const posRes = await getPositions();
@@ -439,6 +467,7 @@ export async function executeTrade(liqEvent) {
     } catch (err) {
       console.warn(`[EXECUTOR] Could not fetch fill price for ${symbol}, using liq price`);
     }
+    timing.positionFetch = Date.now() - posFetchStart;
 
     // Recalculate SL from fill price
     const slPrice2 = tradeSide === 'Buy'
@@ -499,6 +528,7 @@ export async function executeTrade(liqEvent) {
     }
 
     // Set SL first, then trailing stop — using await for reliable sequential execution
+    const tpSlStart = Date.now();
     try {
       const slRes = await setTradingStop(symbol, stopParams);
       if (slRes.retCode !== 0) {
@@ -507,15 +537,18 @@ export async function executeTrade(liqEvent) {
         const tpType = tpPrice && config.tpOrderType === 'Limit' ? ' (limit)' : '';
         console.log(`[EXECUTOR] SL${tpPrice ? '/TP' : ''} set for ${symbol} | SL: ${slPrice2}${tpPrice ? ` | TP: ${tpPrice}${tpType}` : ''}`);
       }
+      timing.tpSlSet = Date.now() - tpSlStart;
 
       // Set trailing stop with activePrice — activates once price moves by 1x trail distance
       if (trailingStopDist && trailActivePrice) {
+        const trailStart = Date.now();
         const trailRes = await setTradingStop(symbol, { trailingStop: trailingStopDist, activePrice: trailActivePrice });
         if (trailRes.retCode !== 0) {
           console.error(`[EXECUTOR] Failed to set trailing stop for ${symbol}: ${trailRes.retMsg}`);
         } else {
           console.log(`[EXECUTOR] Trailing stop set for ${symbol} | Trail: ${trailingStopDist} | Activates @ ${trailActivePrice}`);
         }
+        timing.trailSet = Date.now() - trailStart;
       }
     } catch (err) {
       console.error(`[EXECUTOR] Failed to set SL/trailing for ${symbol}:`, err.message);
@@ -544,15 +577,29 @@ export async function executeTrade(liqEvent) {
       dcaLevel: 0,
       totalBudget,
       lastEntryPrice: fillPrice,
+      timing, // granular latency breakdown
     };
     activePositions.set(symbol, position);
 
     const tpDisplay = tpPrice || 'TRAIL';
-    logTrade(liqEvent, 'FILLED', `Fill: ${fillPrice} | ${tpPrice ? `TP @ ${tpPrice}` : `Trail: ${trailingStopDist}`} | SL @ ${slPrice2} [${tpMethod}]`, execTime, position);
+    logTrade(liqEvent, 'FILLED', `Fill: ${fillPrice} | ${tpPrice ? `TP @ ${tpPrice}` : `Trail: ${trailingStopDist}`} | SL @ ${slPrice2} [${tpMethod}]`, execTime, position, timing);
 
     console.log(
       `[TRADE] ${tradeSide} ${qty} ${symbol} @ ${fillPrice} (liq ${price}) | ${tpPrice ? `TP: ${tpPrice}` : `Trail: ${trailingStopDist}`} | SL: ${slPrice2} | ${tpMethod} | ${orderVia} | Exec: ${execTime}ms | Liq: $${usdValue.toFixed(0)}`
     );
+
+    // Log granular latency breakdown
+    const timingParts = [];
+    if (timing.preChecks) timingParts.push(`pre:${timing.preChecks}ms`);
+    if (timing.leverage) timingParts.push(`lev:${timing.leverage}ms`);
+    if (timing.atr) timingParts.push(`atr:${timing.atr}ms`);
+    if (timing.orderbook) timingParts.push(`ob:${timing.orderbook}ms`);
+    if (timing.orderPlace) timingParts.push(`order:${timing.orderPlace}ms`);
+    if (timing.orderFillWait) timingParts.push(`fillWait:${timing.orderFillWait}ms`);
+    if (timing.positionFetch) timingParts.push(`posFetch:${timing.positionFetch}ms`);
+    if (timing.tpSlSet) timingParts.push(`tpSl:${timing.tpSlSet}ms`);
+    if (timing.trailSet) timingParts.push(`trail:${timing.trailSet}ms`);
+    console.log(`[LATENCY] ${symbol} | ${timingParts.join(' | ')} | TOTAL: ${execTime}ms`);
 
     return position;
   } catch (err) {
@@ -569,6 +616,16 @@ async function executeDCA(liqEvent, existingPos) {
   const { symbol, price, usdValue } = liqEvent;
   const startTime = Date.now();
   const nextLevel = (existingPos.dcaLevel || 0) + 1;
+
+  // Granular latency tracking for DCA
+  const timing = {
+    orderbook: 0,
+    orderPlace: 0,
+    orderFillWait: 0,
+    positionFetch: 0,
+    slSet: 0,
+    trailSet: 0,
+  };
 
   // Lock symbol
   pendingSymbols.add(symbol);
@@ -603,6 +660,7 @@ async function executeDCA(liqEvent, existingPos) {
 
     if (entryType === 'Limit') {
       let limitPrice = null;
+      const obStart = Date.now();
       try {
         const ob = await getOrderbook(symbol, 1);
         if (ob.retCode === 0 && ob.result) {
@@ -614,7 +672,9 @@ async function executeDCA(liqEvent, existingPos) {
       } catch (err) {
         console.warn(`[EXECUTOR] DCA orderbook error for ${symbol}:`, err.message);
       }
+      timing.orderbook = Date.now() - obStart;
 
+      const orderStart = Date.now();
       if (!limitPrice) {
         if (isTradeWsReady()) {
           try {
@@ -628,6 +688,7 @@ async function executeDCA(liqEvent, existingPos) {
           orderResult = await placeOrder(symbol, tradeSide, qty);
           orderVia = 'REST(mkt-fallback)';
         }
+        timing.orderPlace = Date.now() - orderStart;
       } else {
         const limitParams = { price: String(limitPrice), timeInForce: 'PostOnly' };
         if (isTradeWsReady()) {
@@ -642,6 +703,7 @@ async function executeDCA(liqEvent, existingPos) {
           orderResult = await placeOrder(symbol, tradeSide, qty, 'Limit', limitParams);
           orderVia = 'REST(limit)';
         }
+        timing.orderPlace = Date.now() - orderStart;
 
         if (orderResult.retCode !== 0) {
           logTrade(liqEvent, 'SKIPPED', `DCA limit rejected: ${orderResult.retMsg}`, Date.now() - startTime);
@@ -650,6 +712,7 @@ async function executeDCA(liqEvent, existingPos) {
 
         // Wait for fill
         const limitOrderId = orderResult.result.orderId;
+        const fillWaitStart = Date.now();
         await new Promise(r => setTimeout(r, 2000));
 
         try {
@@ -665,9 +728,11 @@ async function executeDCA(liqEvent, existingPos) {
         } catch (err) {
           console.warn(`[EXECUTOR] DCA order status check failed for ${symbol}:`, err.message);
         }
+        timing.orderFillWait = Date.now() - fillWaitStart;
       }
     } else {
       // Market order
+      const orderStart = Date.now();
       if (isTradeWsReady()) {
         try {
           orderResult = await placeOrderWs(symbol, tradeSide, qty);
@@ -680,6 +745,7 @@ async function executeDCA(liqEvent, existingPos) {
         orderResult = await placeOrder(symbol, tradeSide, qty);
         orderVia = 'REST';
       }
+      timing.orderPlace = Date.now() - orderStart;
     }
 
     const execTime = Date.now() - startTime;
@@ -691,6 +757,7 @@ async function executeDCA(liqEvent, existingPos) {
     }
 
     // Fetch new avgPrice and size from Bybit position data
+    const posFetchStart = Date.now();
     let newAvgPrice = price;
     let newTotalQty = existingPos.qty + qty;
     try {
@@ -706,6 +773,7 @@ async function executeDCA(liqEvent, existingPos) {
     } catch (err) {
       console.warn(`[EXECUTOR] DCA could not fetch position for ${symbol}, using estimates`);
     }
+    timing.positionFetch = Date.now() - posFetchStart;
 
     // Recalculate SL from new avgPrice
     const maxLossUsd = initialBalance * (config.stopLossAccountPct / 100);
@@ -734,6 +802,7 @@ async function executeDCA(liqEvent, existingPos) {
     }
 
     // Set SL, then trailing stop with new activePrice
+    const slSetStart = Date.now();
     try {
       const slRes = await setTradingStop(symbol, { stopLoss: newSL });
       if (slRes.retCode !== 0) {
@@ -741,14 +810,17 @@ async function executeDCA(liqEvent, existingPos) {
       } else {
         console.log(`[EXECUTOR] DCA SL updated for ${symbol} @ ${newSL}`);
       }
+      timing.slSet = Date.now() - slSetStart;
 
       if (trailDist && newTrailActive) {
+        const trailStart = Date.now();
         const trailRes = await setTradingStop(symbol, { trailingStop: trailDist, activePrice: newTrailActive });
         if (trailRes.retCode !== 0) {
           console.error(`[EXECUTOR] DCA trailing stop failed for ${symbol}: ${trailRes.retMsg}`);
         } else {
           console.log(`[EXECUTOR] DCA trailing stop updated for ${symbol} | Trail: ${trailDist} | Activates @ ${newTrailActive}`);
         }
+        timing.trailSet = Date.now() - trailStart;
       }
     } catch (err) {
       console.error(`[EXECUTOR] DCA SL/trailing error for ${symbol}:`, err.message);
@@ -763,11 +835,21 @@ async function executeDCA(liqEvent, existingPos) {
     existingPos.lastEntryPrice = price;
 
     const dcaLabel = `DCA ${nextLevel + 1}/${DCA_SPLITS.length}`;
-    logTrade(liqEvent, 'FILLED', `${dcaLabel} | Avg: ${newAvgPrice} | SL: ${newSL} | Qty: ${newTotalQty}`, execTime, existingPos);
+    logTrade(liqEvent, 'FILLED', `${dcaLabel} | Avg: ${newAvgPrice} | SL: ${newSL} | Qty: ${newTotalQty}`, execTime, existingPos, timing);
 
     console.log(
       `[TRADE] ${dcaLabel} ${tradeSide} +${qty} ${symbol} @ ${price} | Avg: ${newAvgPrice} | SL: ${newSL} | Total: ${newTotalQty} | ${orderVia} | ${execTime}ms`
     );
+
+    // Log granular latency breakdown for DCA
+    const timingParts = [];
+    if (timing.orderbook) timingParts.push(`ob:${timing.orderbook}ms`);
+    if (timing.orderPlace) timingParts.push(`order:${timing.orderPlace}ms`);
+    if (timing.orderFillWait) timingParts.push(`fillWait:${timing.orderFillWait}ms`);
+    if (timing.positionFetch) timingParts.push(`posFetch:${timing.positionFetch}ms`);
+    if (timing.slSet) timingParts.push(`sl:${timing.slSet}ms`);
+    if (timing.trailSet) timingParts.push(`trail:${timing.trailSet}ms`);
+    console.log(`[LATENCY] ${dcaLabel} ${symbol} | ${timingParts.join(' | ')} | TOTAL: ${execTime}ms`);
 
     return existingPos;
   } catch (err) {
@@ -780,7 +862,7 @@ async function executeDCA(liqEvent, existingPos) {
   }
 }
 
-function logTrade(liqEvent, status, detail, execTimeMs, position = null) {
+function logTrade(liqEvent, status, detail, execTimeMs, position = null, timing = null) {
   const entry = {
     timestamp: Date.now(),
     symbol: liqEvent.symbol,
@@ -802,6 +884,7 @@ function logTrade(liqEvent, status, detail, execTimeMs, position = null) {
       tpMethod: position.tpMethod,
       dcaLevel: position.dcaLevel,
     } : null,
+    timing: timing || null, // granular latency breakdown
   };
 
   tradeLog.unshift(entry);

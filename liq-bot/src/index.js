@@ -28,7 +28,7 @@ async function main() {
   console.log(`  ATR period: ${config.atrPeriod} (${config.atrInterval}m candles)`);
   console.log(`  TP multiplier: ${config.tpAtrMultiplier}x ATR`);
   console.log(`  Trailing stop: ${config.trailingAtrMultiplier}x ATR`);
-  console.log(`  Max hold time: ${config.maxHoldSeconds}s`);
+  console.log(`  Max hold time: ${config.maxHoldSeconds === 0 ? 'DISABLED' : config.maxHoldSeconds + 's'}`);
   console.log('===========================================');
 
   // 0. Restore persisted data from disk
@@ -172,6 +172,7 @@ async function main() {
       tpOrderType: config.tpOrderType,
       timeExitOrderType: config.timeExitOrderType,
       minTurnover24h: config.minTurnover24h,
+      leverage: config.leverage,
     });
   });
 
@@ -180,7 +181,7 @@ async function main() {
   app.post('/api/config', (req, res) => {
     const updates = {};
 
-    const { minLiqValueUsd, maxHoldSeconds, maxPositions, trailingAtrMultiplier, atrInterval, entryOrderType, tpOrderType, timeExitOrderType, minTurnover24h } = req.body;
+    const { minLiqValueUsd, maxHoldSeconds, maxPositions, trailingAtrMultiplier, atrInterval, entryOrderType, tpOrderType, timeExitOrderType, minTurnover24h, leverage } = req.body;
 
     if (minLiqValueUsd != null && typeof minLiqValueUsd === 'number' && minLiqValueUsd >= 0) {
       const old = config.minLiqValueUsd;
@@ -243,6 +244,13 @@ async function main() {
       config.minTurnover24h = minTurnover24h;
       console.log(`[CONFIG] Min turnover 24h changed: $${old} → $${minTurnover24h}`);
       updates.minTurnover24h = minTurnover24h;
+    }
+
+    if (leverage != null && typeof leverage === 'number' && leverage >= 1 && leverage <= 100) {
+      const old = config.leverage;
+      config.leverage = leverage;
+      console.log(`[CONFIG] Leverage changed: ${old}x → ${leverage}x`);
+      updates.leverage = leverage;
     }
 
     if (Object.keys(updates).length > 0) {

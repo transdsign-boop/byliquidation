@@ -1,6 +1,7 @@
 import { config } from '../config.js';
 import { getPositions, closePosition, setTradingStop, getClosedPnl, getOrderbook, cancelOrder, getExecutionList } from '../api/bybit.js';
 import { instrumentCache } from './instruments.js';
+import { getATR } from './atr.js';
 
 // Track recently closed symbols to prevent duplicate close records
 const recentlyClosedSymbols = new Map(); // symbol -> timestamp
@@ -132,7 +133,107 @@ async function fetchBybitCloseData(symbol, entryOrderId, trackedEntryPrice = 0, 
 // Track close order IDs we've already recorded to prevent duplicate matching
 const usedCloseOrderIds = new Set();
 
-import { getActivePositions, getTradeLog, getPendingSymbols } from './executor.js';
+import { getActivePositions, getTradeLog, getPendingSymbols, getInitialBalance } from './executor.js';
+
+/**
+ * Calculate and set SL + Trailing Stop for a naked position.
+ * Uses the same 2% account risk rule as the executor.
+ * Returns { slPrice, trailingStop, trailActivePrice } or null on failure.
+ */
+async function ensureProtectionOnPosition(symbol, side, entryPrice, qty) {
+  const balance = getInitialBalance();
+  if (balance <= 0) {
+    console.warn(`[MONITOR] Cannot set protection for ${symbol} — no account balance loaded`);
+    return null;
+  }
+
+  const inst = instrumentCache.get(symbol);
+  if (!inst) {
+    console.warn(`[MONITOR] Cannot set protection for ${symbol} — unknown instrument`);
+    return null;
+  }
+
+  // Calculate SL: max loss = stopLossAccountPct% of balance
+  const maxLossUsd = balance * (config.stopLossAccountPct / 100);
+  let slOffset = maxLossUsd / qty;
+
+  // Ensure SL offset is at least 1 tick
+  if (inst.tickSize && slOffset < inst.tickSize) {
+    slOffset = inst.tickSize;
+  }
+
+  // Safety clamp: SL must never exceed 90% of entry price
+  const maxSlOffset = entryPrice * 0.9;
+  if (slOffset > maxSlOffset) {
+    console.warn(`[MONITOR] ${symbol} SL offset ${slOffset.toFixed(6)} > 90% of entry, clamping to ${maxSlOffset.toFixed(6)}`);
+    slOffset = maxSlOffset;
+  }
+
+  const slPrice = side === 'Buy'
+    ? instrumentCache.roundPrice(symbol, entryPrice - slOffset)
+    : instrumentCache.roundPrice(symbol, entryPrice + slOffset);
+
+  // Calculate trailing stop based on ATR
+  let trailingStop = null;
+  let trailActivePrice = null;
+
+  try {
+    const atrValue = await getATR(symbol);
+    if (atrValue && atrValue > 0) {
+      trailingStop = instrumentCache.roundPrice(symbol, atrValue * config.trailingAtrMultiplier);
+
+      // Ensure trailing stop is at least 1 tick
+      if (!trailingStop && inst.tickSize) {
+        trailingStop = inst.tickSize;
+      }
+
+      // Calculate activation price (entry + trail distance + fee buffer)
+      if (trailingStop) {
+        const feeBuffer = instrumentCache.roundPrice(symbol, entryPrice * 0.0015);
+        trailActivePrice = side === 'Buy'
+          ? instrumentCache.roundPrice(symbol, entryPrice + trailingStop + feeBuffer)
+          : instrumentCache.roundPrice(symbol, entryPrice - trailingStop - feeBuffer);
+      }
+    }
+  } catch (err) {
+    console.warn(`[MONITOR] ATR fetch failed for ${symbol}, skipping trailing stop:`, err.message);
+  }
+
+  console.log(`[MONITOR] Setting protection on naked position ${symbol} | Side: ${side} | Entry: ${entryPrice} | SL: ${slPrice} | Trail: ${trailingStop || '—'} | Max loss: $${maxLossUsd.toFixed(2)}`);
+
+  const result = { slPrice: null, trailingStop: null, trailActivePrice: null };
+
+  // Set SL first
+  try {
+    const slRes = await setTradingStop(symbol, { stopLoss: slPrice });
+    if (slRes.retCode !== 0) {
+      console.error(`[MONITOR] Failed to set SL on ${symbol}: ${slRes.retMsg}`);
+    } else {
+      console.log(`[MONITOR] SL successfully set on ${symbol} @ ${slPrice}`);
+      result.slPrice = slPrice;
+    }
+  } catch (err) {
+    console.error(`[MONITOR] Error setting SL on ${symbol}:`, err.message);
+  }
+
+  // Set trailing stop if we have ATR data
+  if (trailingStop && trailActivePrice) {
+    try {
+      const trailRes = await setTradingStop(symbol, { trailingStop, activePrice: trailActivePrice });
+      if (trailRes.retCode !== 0) {
+        console.error(`[MONITOR] Failed to set trailing stop on ${symbol}: ${trailRes.retMsg}`);
+      } else {
+        console.log(`[MONITOR] Trailing stop set on ${symbol} | Trail: ${trailingStop} | Activates @ ${trailActivePrice}`);
+        result.trailingStop = trailingStop;
+        result.trailActivePrice = trailActivePrice;
+      }
+    } catch (err) {
+      console.error(`[MONITOR] Error setting trailing stop on ${symbol}:`, err.message);
+    }
+  }
+
+  return result.slPrice ? result : null;
+}
 
 /**
  * Position Monitor
@@ -272,6 +373,19 @@ export async function syncPositions() {
       console.log(
         `[MONITOR] Detected untracked position: ${p.side} ${size} ${symbol} @ ${entryPrice} | TP: ${position.tpPrice || '—'} | SL: ${position.slPrice || '—'}`
       );
+
+      // CRITICAL: If detected position has no SL or trailing stop, set them immediately
+      const needsSL = !position.slPrice;
+      const needsTrail = !position.trailingStop;
+      if (needsSL || needsTrail) {
+        console.warn(`[MONITOR] NAKED POSITION DETECTED: ${symbol} missing ${needsSL ? 'SL' : ''}${needsSL && needsTrail ? ' + ' : ''}${needsTrail ? 'trailing stop' : ''} — setting now`);
+        const protection = await ensureProtectionOnPosition(symbol, p.side, entryPrice, size);
+        if (protection) {
+          if (protection.slPrice) position.slPrice = protection.slPrice;
+          if (protection.trailingStop) position.trailingStop = protection.trailingStop;
+          if (protection.trailActivePrice) position.trailActivePrice = protection.trailActivePrice;
+        }
+      }
     }
 
     // Check each tracked position
@@ -310,6 +424,19 @@ export async function syncPositions() {
       const bybitTrail = parseFloat(bybitPos.trailingStop || '0');
       const slMissing = bybitSL === 0 && tracked.slPrice;
       const trailMissing = bybitTrail === 0 && tracked.trailingStop;
+
+      // CRITICAL: Naked position check — no SL/trail on Bybit AND no tracked SL/trail
+      const nakedSL = bybitSL === 0 && !tracked.slPrice;
+      const nakedTrail = bybitTrail === 0 && !tracked.trailingStop;
+      if (nakedSL || nakedTrail) {
+        console.warn(`[MONITOR] NAKED POSITION: ${symbol} missing ${nakedSL ? 'SL' : ''}${nakedSL && nakedTrail ? ' + ' : ''}${nakedTrail ? 'trailing stop' : ''} — setting now`);
+        const protection = await ensureProtectionOnPosition(symbol, tracked.side, tracked.entryPrice, tracked.qty);
+        if (protection) {
+          if (protection.slPrice) tracked.slPrice = protection.slPrice;
+          if (protection.trailingStop) tracked.trailingStop = protection.trailingStop;
+          if (protection.trailActivePrice) tracked.trailActivePrice = protection.trailActivePrice;
+        }
+      }
 
       if (slMissing || trailMissing) {
         if (slMissing) {
@@ -353,9 +480,10 @@ export async function syncPositions() {
         }
       }
 
-      // Position still open — check time-based forced exit
+      // Position still open — check time-based forced exit (0 = disabled)
+      const maxHoldMs = getMaxHoldTimeMs();
       const holdTimeMs = Date.now() - tracked.openTime;
-      if (holdTimeMs > getMaxHoldTimeMs()) {
+      if (maxHoldMs > 0 && holdTimeMs > maxHoldMs) {
         // Skip time exit if trailing stop has activated (position in profit, let trail handle it)
         const uPnl = tracked.unrealisedPnl || 0;
         const markPrice = tracked.markPrice || 0;
@@ -597,6 +725,7 @@ export async function reconcilePnl() {
 
 // Start polling positions every 2 seconds
 export function startMonitor() {
-  console.log(`[MONITOR] Starting position monitor (2s interval, ${config.maxHoldSeconds}s max hold)...`);
+  const holdMsg = config.maxHoldSeconds === 0 ? 'DISABLED' : `${config.maxHoldSeconds}s max hold`;
+  console.log(`[MONITOR] Starting position monitor (2s interval, ${holdMsg})...`);
   setInterval(syncPositions, 2000);
 }
