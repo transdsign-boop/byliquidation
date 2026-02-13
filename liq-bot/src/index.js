@@ -290,7 +290,7 @@ async function main() {
     }
 
     const updates = {};
-    if (dcaLevel != null && typeof dcaLevel === 'number' && dcaLevel >= 0 && dcaLevel <= 2) {
+    if (dcaLevel != null && typeof dcaLevel === 'number' && dcaLevel >= 0 && dcaLevel <= 3) {
       pos.dcaLevel = dcaLevel;
       updates.dcaLevel = dcaLevel;
       console.log(`[API] ${symbol} dcaLevel updated to ${dcaLevel}`);
@@ -304,7 +304,7 @@ async function main() {
     if (Object.keys(updates).length > 0) {
       res.json({ ok: true, symbol, ...updates });
     } else {
-      res.status(400).json({ ok: false, error: 'No valid fields provided (dcaLevel: 0-2, totalBudget: number)' });
+      res.status(400).json({ ok: false, error: 'No valid fields provided (dcaLevel: 0-3, totalBudget: number)' });
     }
   });
 

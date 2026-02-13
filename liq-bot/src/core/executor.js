@@ -14,7 +14,7 @@ import { getATR } from './atr.js';
  * 3. Set take-profit AND stop-loss via Bybit TP/SL
  *
  * DCA (Dollar-Cost Averaging):
- * - 3 pyramid entries: 20% → 30% → 50% of total position budget
+ * - 4 pyramid entries: 10% → 20% → 30% → 40% of total position budget
  * - Each level triggered by a new qualifying liquidation on same symbol
  * - Price improvement required between entries
  * - After each add: recalculate SL and trailing stop from Bybit's new avgPrice
@@ -25,8 +25,8 @@ import { getATR } from './atr.js';
  * - Uses Bybit TP/SL (not conditional triggers)
  */
 
-// DCA split ratios: 3 entries totaling 100% of position budget
-const DCA_SPLITS = [0.20, 0.30, 0.50];
+// DCA split ratios: 4 entries totaling 100% of position budget
+const DCA_SPLITS = [0.10, 0.20, 0.30, 0.40];
 
 // Track which symbols we've already set leverage for
 const leverageSet = new Set();
