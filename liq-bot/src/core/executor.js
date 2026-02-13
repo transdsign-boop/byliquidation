@@ -26,7 +26,8 @@ import { getATR } from './atr.js';
  */
 
 // DCA split ratios: 4 entries totaling 100% of position budget
-const DCA_SPLITS = [0.10, 0.20, 0.30, 0.40];
+// With 7% minPositionPct: ~$1k → $1.4k → $2.1k → $2.5k = $7k total (on $100k account)
+const DCA_SPLITS = [0.15, 0.20, 0.30, 0.35];
 
 // Track which symbols we've already set leverage for
 const leverageSet = new Set();
