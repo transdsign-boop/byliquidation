@@ -45,6 +45,8 @@ class InstrumentCache {
   }
 
   isBlocked(symbol) {
+    // Block USDC pairs - only trade USDT pairs
+    if (symbol.includes('USDC')) return true;
     const inst = this.instruments.get(symbol);
     if (!inst) return false;
     return inst.isPreListing || inst.status !== 'Trading';
