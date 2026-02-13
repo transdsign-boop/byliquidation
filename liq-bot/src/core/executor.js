@@ -45,6 +45,16 @@ export function hydrateTradeLog(saved) {
   }
 }
 
+// Persisted position data (loaded before Bybit sync)
+let persistedPositions = {};
+
+export function hydratePositions(saved) {
+  if (saved && typeof saved === 'object') {
+    persistedPositions = saved;
+    console.log(`[EXECUTOR] Loaded ${Object.keys(saved).length} persisted position(s) for merge.`);
+  }
+}
+
 // Account balance — refreshed periodically
 let initialBalance = 0;
 
@@ -118,6 +128,34 @@ export async function loadExistingPositions() {
           : instrumentCache.roundPrice(symbol, entryPrice - trailDist - feeBuffer);
       }
 
+      // Check if we have persisted data for this position (preserves totalBudget, dcaLevel, etc.)
+      const persisted = persistedPositions[symbol];
+
+      // Use persisted budget if available, otherwise estimate
+      let totalBudget;
+      let dcaLevel = 0;
+      let lastEntryPrice = entryPrice;
+      let liqUsdValue = 0;
+      let openTime = parseInt(p.createdTime) || Date.now();
+      let atr = null;
+      let tpMethod = 'existing';
+
+      if (persisted && persisted.totalBudget > 0) {
+        // Restore persisted tracking data
+        totalBudget = persisted.totalBudget;
+        dcaLevel = persisted.dcaLevel || 0;
+        lastEntryPrice = persisted.lastEntryPrice || entryPrice;
+        liqUsdValue = persisted.liqUsdValue || 0;
+        openTime = persisted.openTime || openTime;
+        atr = persisted.atr || null;
+        tpMethod = persisted.tpMethod || 'existing';
+        console.log(`[EXECUTOR] Restored persisted data for ${symbol}: budget=$${totalBudget.toFixed(2)}, DCA=${dcaLevel}/${DCA_SPLITS.length}`);
+      } else {
+        // Estimate budget: assume this is a "level 0" (20%) entry
+        const currentNotional = size * entryPrice;
+        totalBudget = currentNotional / DCA_SPLITS[0];
+      }
+
       const position = {
         symbol,
         side: p.side,
@@ -125,23 +163,23 @@ export async function loadExistingPositions() {
         qty: size,
         tpPrice: parseFloat(p.takeProfit || '0') || null,
         slPrice: parseFloat(p.stopLoss || '0') || null,
-        orderId: null,
-        openTime: parseInt(p.createdTime) || Date.now(),
-        liqUsdValue: 0,
-        execTimeMs: 0,
-        atr: null,
+        orderId: persisted?.orderId || null,
+        openTime,
+        liqUsdValue,
+        execTimeMs: persisted?.execTimeMs || 0,
+        atr,
         trailingStop: trailDist,
         trailActivePrice: trailActive,
-        tpMethod: 'existing',
-        dcaLevel: 0,
-        totalBudget: 0,       // unknown for pre-existing, won't DCA
-        lastEntryPrice: entryPrice,
+        tpMethod,
+        dcaLevel,
+        totalBudget,
+        lastEntryPrice,
       };
       activePositions.set(symbol, position);
       count++;
 
       console.log(
-        `[EXECUTOR] Loaded existing position: ${p.side} ${size} ${symbol} @ ${position.entryPrice} | TP: ${position.tpPrice || '—'} | SL: ${position.slPrice || '—'}`
+        `[EXECUTOR] Loaded existing position: ${p.side} ${size} ${symbol} @ ${position.entryPrice} | TP: ${position.tpPrice || '—'} | SL: ${position.slPrice || '—'} | DCA: ${dcaLevel}/${DCA_SPLITS.length}`
       );
     }
 

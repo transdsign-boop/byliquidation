@@ -3,7 +3,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { config } from './config.js';
 import { LiquidationScanner } from './core/scanner.js';
-import { executeTrade, getTradeLog, resetTradeLog, getActivePositions, setInitialBalance, loadExistingPositions, hydrateTradeLog, resetExecutorState } from './core/executor.js';
+import { executeTrade, getTradeLog, resetTradeLog, getActivePositions, setInitialBalance, loadExistingPositions, hydrateTradeLog, hydratePositions, resetExecutorState } from './core/executor.js';
 import { startMonitor, getStats, getPnlHistory, getTotalPnl, hydratePnl, resetPnl, reconcilePnl, resetMonitorState } from './core/monitor.js';
 import { startPersistence, saveJSON, loadJSON } from './core/persistence.js';
 import { instrumentCache } from './core/instruments.js';
@@ -31,10 +31,11 @@ async function main() {
   console.log(`  Max hold time: ${config.maxHoldSeconds === 0 ? 'DISABLED' : config.maxHoldSeconds + 's'}`);
   console.log('===========================================');
 
-  // 0. Restore persisted data from disk
-  const saved = startPersistence({ getTradeLog, getPnlHistory, getTotalPnl });
+  // 0. Restore persisted data from disk (including active positions)
+  const saved = startPersistence({ getTradeLog, getPnlHistory, getTotalPnl, getActivePositions });
   hydrateTradeLog(saved.tradeLog);
   hydratePnl(saved.pnlHistory, saved.totalPnl);
+  hydratePositions(saved.activePositions);
 
   // 0b. Restore runtime config overrides from disk
   const savedConfig = loadJSON('config_overrides.json');
