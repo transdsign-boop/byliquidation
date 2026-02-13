@@ -278,6 +278,36 @@ async function main() {
     res.json({ ok: true });
   });
 
+  // API: update position DCA level and budget (for fixing positions after restart)
+  app.post('/api/position/:symbol', (req, res) => {
+    const { symbol } = req.params;
+    const { dcaLevel, totalBudget } = req.body;
+    const positions = getActivePositions();
+    const pos = positions.get(symbol);
+
+    if (!pos) {
+      return res.status(404).json({ ok: false, error: `Position not found: ${symbol}` });
+    }
+
+    const updates = {};
+    if (dcaLevel != null && typeof dcaLevel === 'number' && dcaLevel >= 0 && dcaLevel <= 2) {
+      pos.dcaLevel = dcaLevel;
+      updates.dcaLevel = dcaLevel;
+      console.log(`[API] ${symbol} dcaLevel updated to ${dcaLevel}`);
+    }
+    if (totalBudget != null && typeof totalBudget === 'number' && totalBudget > 0) {
+      pos.totalBudget = totalBudget;
+      updates.totalBudget = totalBudget;
+      console.log(`[API] ${symbol} totalBudget updated to $${totalBudget.toFixed(2)}`);
+    }
+
+    if (Object.keys(updates).length > 0) {
+      res.json({ ok: true, symbol, ...updates });
+    } else {
+      res.status(400).json({ ok: false, error: 'No valid fields provided (dcaLevel: 0-2, totalBudget: number)' });
+    }
+  });
+
   // API: switch Bybit account (new API key/secret) at runtime
   app.post('/api/account-switch', async (req, res) => {
     const { apiKey, apiSecret } = req.body;
