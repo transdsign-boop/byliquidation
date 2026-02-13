@@ -13,11 +13,20 @@ import { getATR } from './atr.js';
  * 2. Place market order immediately
  * 3. Set take-profit AND stop-loss via Bybit TP/SL
  *
+ * DCA (Dollar-Cost Averaging):
+ * - 3 pyramid entries: 20% → 30% → 50% of total position budget
+ * - Each level triggered by a new qualifying liquidation on same symbol
+ * - Price improvement required between entries
+ * - After each add: recalculate SL and trailing stop from Bybit's new avgPrice
+ *
  * Stop-loss rule (funded trader):
  * - Every position MUST have a SL set immediately
  * - Max risk per position = SL_ACCOUNT_PCT% of initial account balance (default 3%)
  * - Uses Bybit TP/SL (not conditional triggers)
  */
+
+// DCA split ratios: 3 entries totaling 100% of position budget
+const DCA_SPLITS = [0.20, 0.30, 0.50];
 
 // Track which symbols we've already set leverage for
 const leverageSet = new Set();
@@ -78,6 +87,10 @@ export function getActivePositions() {
   return activePositions;
 }
 
+export function getPendingSymbols() {
+  return pendingSymbols;
+}
+
 export async function loadExistingPositions() {
   const { getPositions } = await import('../api/bybit.js');
   try {
@@ -99,9 +112,10 @@ export async function loadExistingPositions() {
       const trailDist = parseFloat(p.trailingStop || '0') || null;
       let trailActive = null;
       if (trailDist) {
+        const feeBuffer = instrumentCache.roundPrice(symbol, entryPrice * 0.0015);
         trailActive = p.side === 'Buy'
-          ? instrumentCache.roundPrice(symbol, entryPrice + trailDist)
-          : instrumentCache.roundPrice(symbol, entryPrice - trailDist);
+          ? instrumentCache.roundPrice(symbol, entryPrice + trailDist + feeBuffer)
+          : instrumentCache.roundPrice(symbol, entryPrice - trailDist - feeBuffer);
       }
 
       const position = {
@@ -119,6 +133,9 @@ export async function loadExistingPositions() {
         trailingStop: trailDist,
         trailActivePrice: trailActive,
         tpMethod: 'existing',
+        dcaLevel: 0,
+        totalBudget: 0,       // unknown for pre-existing, won't DCA
+        lastEntryPrice: entryPrice,
       };
       activePositions.set(symbol, position);
       count++;
@@ -146,10 +163,31 @@ export async function executeTrade(liqEvent) {
     return null;
   }
 
-  // Don't stack same symbol (check both active and pending)
-  if (activePositions.has(symbol) || pendingSymbols.has(symbol)) {
-    logTrade(liqEvent, 'SKIPPED', 'Already in position', 0);
+  // Don't allow concurrent trades on same symbol
+  if (pendingSymbols.has(symbol)) {
+    logTrade(liqEvent, 'SKIPPED', 'Trade pending on symbol', 0);
     return null;
+  }
+
+  const existingPos = activePositions.get(symbol);
+  if (existingPos) {
+    // DCA path: check if we can add to this position
+    const dcaLevel = existingPos.dcaLevel || 0;
+    if (dcaLevel >= DCA_SPLITS.length - 1) {
+      logTrade(liqEvent, 'SKIPPED', `DCA fully filled (${DCA_SPLITS.length}/${DCA_SPLITS.length})`, 0);
+      return null;
+    }
+    // Price improvement check
+    const lastEntry = existingPos.lastEntryPrice || existingPos.entryPrice;
+    const priceImproved = existingPos.side === 'Buy'
+      ? price < lastEntry   // for longs, new price must be lower
+      : price > lastEntry;  // for shorts, new price must be higher
+    if (!priceImproved) {
+      logTrade(liqEvent, 'SKIPPED', `DCA price not improved (${price} vs last ${lastEntry})`, 0);
+      return null;
+    }
+    // Execute DCA add
+    return executeDCA(liqEvent, existingPos);
   }
 
   // Lock this symbol immediately (synchronous, before any await)
@@ -190,7 +228,8 @@ export async function executeTrade(liqEvent) {
     // Calculate position size — must be at least MIN_POSITION_PCT% of initial balance (notional)
     const minNotional = initialBalance * (config.minPositionPct / 100);
     const configNotional = config.positionSizeUsd * config.leverage;
-    const notional = Math.max(configNotional, minNotional);
+    const totalBudget = Math.max(configNotional, minNotional);
+    const notional = totalBudget * DCA_SPLITS[0]; // 20% for first DCA entry
 
     const qty = instrumentCache.roundQty(
       symbol,
@@ -264,11 +303,21 @@ export async function executeTrade(liqEvent) {
     }
 
     // Stop-loss: max risk = SL_ACCOUNT_PCT% of initial balance (minimum 1 tick)
+    // Use total budget qty (not just DCA entry qty) so SL distance is reasonable.
+    // With DCA, first entry is only 20% of budget — using partial qty would make
+    // slOffset larger than the price itself, producing negative/impossible SL values.
     const maxLossUsd = initialBalance * (config.stopLossAccountPct / 100);
-    let slOffset = maxLossUsd / qty;
+    const totalExpectedQty = instrumentCache.roundQty(symbol, totalBudget / price);
+    let slOffset = maxLossUsd / totalExpectedQty;
     if (inst.tickSize && slOffset < inst.tickSize) {
       slOffset = inst.tickSize;
       console.warn(`[EXECUTOR] ${symbol} SL offset below tick size, using 1 tick: ${inst.tickSize}`);
+    }
+    // Safety clamp: SL must never exceed 90% of entry price (avoids negative SL for buys / absurd SL for shorts)
+    const maxSlOffset = price * 0.9;
+    if (slOffset > maxSlOffset) {
+      console.warn(`[EXECUTOR] ${symbol} SL offset ${slOffset.toFixed(6)} > 90% of price ${price}, clamping to ${maxSlOffset.toFixed(6)}`);
+      slOffset = maxSlOffset;
     }
     const slPrice = tradeSide === 'Buy'
       ? instrumentCache.roundPrice(symbol, price - slOffset)
@@ -436,13 +485,17 @@ export async function executeTrade(liqEvent) {
       }
     }
 
-    // activePrice = entry + trailingDist → trailing activates once in the green by 1x trail distance
-    // At activation: stop = activePrice - trail = fillPrice (worst case = entry, fees only)
+    // activePrice = entry + trailingDist + feeBuffer
+    // Fee buffer ensures that when trailing stop triggers at worst case (immediate reversal after activation),
+    // the stop is at fillPrice + feeBuffer, giving enough gross profit to cover round-trip fees.
+    // Estimated fees: maker entry (0.02%) + taker exit (0.055%) = 0.075%, use 0.1% for safety margin.
     let trailActivePrice = null;
     if (trailingStopDist) {
+      const feeBuffer = instrumentCache.roundPrice(symbol, fillPrice * 0.0015);
       trailActivePrice = tradeSide === 'Buy'
-        ? instrumentCache.roundPrice(symbol, fillPrice + trailingStopDist)
-        : instrumentCache.roundPrice(symbol, fillPrice - trailingStopDist);
+        ? instrumentCache.roundPrice(symbol, fillPrice + trailingStopDist + feeBuffer)
+        : instrumentCache.roundPrice(symbol, fillPrice - trailingStopDist - feeBuffer);
+      console.log(`[EXECUTOR] ${symbol} trail activation includes fee buffer: ${feeBuffer} (0.15% of ${fillPrice})`);
     }
 
     // Set SL first, then trailing stop — using await for reliable sequential execution
@@ -488,6 +541,9 @@ export async function executeTrade(liqEvent) {
       trailActivePrice,
       tpMethod,
       entryOrderMode,
+      dcaLevel: 0,
+      totalBudget,
+      lastEntryPrice: fillPrice,
     };
     activePositions.set(symbol, position);
 
@@ -503,6 +559,221 @@ export async function executeTrade(liqEvent) {
     const execTime = Date.now() - startTime;
     logTrade(liqEvent, 'ERROR', err.message, execTime);
     console.error(`[EXECUTOR] Order error for ${symbol}:`, err.message);
+    return null;
+  } finally {
+    pendingSymbols.delete(symbol);
+  }
+}
+
+async function executeDCA(liqEvent, existingPos) {
+  const { symbol, price, usdValue } = liqEvent;
+  const startTime = Date.now();
+  const nextLevel = (existingPos.dcaLevel || 0) + 1;
+
+  // Lock symbol
+  pendingSymbols.add(symbol);
+
+  try {
+    const inst = instrumentCache.get(symbol);
+    if (!inst) {
+      logTrade(liqEvent, 'SKIPPED', 'DCA: Unknown instrument', 0);
+      return null;
+    }
+
+    if (existingPos.totalBudget <= 0) {
+      logTrade(liqEvent, 'SKIPPED', 'DCA: No budget info (pre-existing position)', 0);
+      return null;
+    }
+
+    // Calculate qty for this DCA level
+    const notional = existingPos.totalBudget * DCA_SPLITS[nextLevel];
+    const qty = instrumentCache.roundQty(symbol, notional / price);
+
+    if (qty < inst.minQty) {
+      logTrade(liqEvent, 'SKIPPED', 'DCA: Qty below minimum', 0);
+      return null;
+    }
+
+    const tradeSide = existingPos.side;
+
+    // Place order (same side as existing position)
+    let orderResult;
+    let orderVia;
+    const entryType = config.entryOrderType || 'Market';
+
+    if (entryType === 'Limit') {
+      let limitPrice = null;
+      try {
+        const ob = await getOrderbook(symbol, 1);
+        if (ob.retCode === 0 && ob.result) {
+          limitPrice = tradeSide === 'Buy'
+            ? parseFloat(ob.result.b[0][0])
+            : parseFloat(ob.result.a[0][0]);
+          limitPrice = instrumentCache.roundPrice(symbol, limitPrice);
+        }
+      } catch (err) {
+        console.warn(`[EXECUTOR] DCA orderbook error for ${symbol}:`, err.message);
+      }
+
+      if (!limitPrice) {
+        if (isTradeWsReady()) {
+          try {
+            orderResult = await placeOrderWs(symbol, tradeSide, qty);
+            orderVia = 'WS(mkt-fallback)';
+          } catch {
+            orderResult = await placeOrder(symbol, tradeSide, qty);
+            orderVia = 'REST(mkt-fallback)';
+          }
+        } else {
+          orderResult = await placeOrder(symbol, tradeSide, qty);
+          orderVia = 'REST(mkt-fallback)';
+        }
+      } else {
+        const limitParams = { price: String(limitPrice), timeInForce: 'PostOnly' };
+        if (isTradeWsReady()) {
+          try {
+            orderResult = await placeOrderWs(symbol, tradeSide, qty, 'Limit', limitParams);
+            orderVia = 'WS(limit)';
+          } catch {
+            orderResult = await placeOrder(symbol, tradeSide, qty, 'Limit', limitParams);
+            orderVia = 'REST(limit)';
+          }
+        } else {
+          orderResult = await placeOrder(symbol, tradeSide, qty, 'Limit', limitParams);
+          orderVia = 'REST(limit)';
+        }
+
+        if (orderResult.retCode !== 0) {
+          logTrade(liqEvent, 'SKIPPED', `DCA limit rejected: ${orderResult.retMsg}`, Date.now() - startTime);
+          return null;
+        }
+
+        // Wait for fill
+        const limitOrderId = orderResult.result.orderId;
+        await new Promise(r => setTimeout(r, 2000));
+
+        try {
+          const orderCheck = await getOrderDetail(symbol, limitOrderId);
+          if (orderCheck.retCode === 0 && orderCheck.result?.list?.length) {
+            const status = orderCheck.result.list[0].orderStatus;
+            if (status !== 'Filled') {
+              await cancelOrder(symbol, limitOrderId).catch(() => {});
+              logTrade(liqEvent, 'SKIPPED', `DCA limit not filled (${status})`, Date.now() - startTime);
+              return null;
+            }
+          }
+        } catch (err) {
+          console.warn(`[EXECUTOR] DCA order status check failed for ${symbol}:`, err.message);
+        }
+      }
+    } else {
+      // Market order
+      if (isTradeWsReady()) {
+        try {
+          orderResult = await placeOrderWs(symbol, tradeSide, qty);
+          orderVia = 'WS';
+        } catch {
+          orderResult = await placeOrder(symbol, tradeSide, qty);
+          orderVia = 'REST(fallback)';
+        }
+      } else {
+        orderResult = await placeOrder(symbol, tradeSide, qty);
+        orderVia = 'REST';
+      }
+    }
+
+    const execTime = Date.now() - startTime;
+
+    if (orderResult.retCode !== 0) {
+      console.error(`[EXECUTOR] DCA order FAILED for ${symbol}: ${orderResult.retMsg} (code ${orderResult.retCode}) | ${execTime}ms`);
+      logTrade(liqEvent, 'FAILED', `DCA: ${orderResult.retMsg}`, execTime);
+      return null;
+    }
+
+    // Fetch new avgPrice and size from Bybit position data
+    let newAvgPrice = price;
+    let newTotalQty = existingPos.qty + qty;
+    try {
+      const posRes = await getPositions();
+      if (posRes.retCode === 0) {
+        const pos = posRes.result.list.find(p => p.symbol === symbol && parseFloat(p.size) > 0);
+        if (pos) {
+          newAvgPrice = parseFloat(pos.avgPrice);
+          newTotalQty = parseFloat(pos.size);
+          console.log(`[EXECUTOR] DCA ${nextLevel + 1}/${DCA_SPLITS.length} ${symbol} | New avg: ${newAvgPrice} | Size: ${newTotalQty}`);
+        }
+      }
+    } catch (err) {
+      console.warn(`[EXECUTOR] DCA could not fetch position for ${symbol}, using estimates`);
+    }
+
+    // Recalculate SL from new avgPrice
+    const maxLossUsd = initialBalance * (config.stopLossAccountPct / 100);
+    let slOffset = maxLossUsd / newTotalQty;
+    if (inst.tickSize && slOffset < inst.tickSize) {
+      slOffset = inst.tickSize;
+    }
+    // Safety clamp: SL must never exceed 90% of avg price
+    const maxSlOffset = newAvgPrice * 0.9;
+    if (slOffset > maxSlOffset) {
+      console.warn(`[EXECUTOR] DCA ${symbol} SL offset ${slOffset.toFixed(6)} > 90% of avgPrice ${newAvgPrice}, clamping`);
+      slOffset = maxSlOffset;
+    }
+    const newSL = tradeSide === 'Buy'
+      ? instrumentCache.roundPrice(symbol, newAvgPrice - slOffset)
+      : instrumentCache.roundPrice(symbol, newAvgPrice + slOffset);
+
+    // Recalculate trailing stop activation from new avgPrice
+    const trailDist = existingPos.trailingStop;
+    let newTrailActive = null;
+    if (trailDist) {
+      const feeBuffer = instrumentCache.roundPrice(symbol, newAvgPrice * 0.0015);
+      newTrailActive = tradeSide === 'Buy'
+        ? instrumentCache.roundPrice(symbol, newAvgPrice + trailDist + feeBuffer)
+        : instrumentCache.roundPrice(symbol, newAvgPrice - trailDist - feeBuffer);
+    }
+
+    // Set SL, then trailing stop with new activePrice
+    try {
+      const slRes = await setTradingStop(symbol, { stopLoss: newSL });
+      if (slRes.retCode !== 0) {
+        console.error(`[EXECUTOR] DCA SL set failed for ${symbol}: ${slRes.retMsg}`);
+      } else {
+        console.log(`[EXECUTOR] DCA SL updated for ${symbol} @ ${newSL}`);
+      }
+
+      if (trailDist && newTrailActive) {
+        const trailRes = await setTradingStop(symbol, { trailingStop: trailDist, activePrice: newTrailActive });
+        if (trailRes.retCode !== 0) {
+          console.error(`[EXECUTOR] DCA trailing stop failed for ${symbol}: ${trailRes.retMsg}`);
+        } else {
+          console.log(`[EXECUTOR] DCA trailing stop updated for ${symbol} | Trail: ${trailDist} | Activates @ ${newTrailActive}`);
+        }
+      }
+    } catch (err) {
+      console.error(`[EXECUTOR] DCA SL/trailing error for ${symbol}:`, err.message);
+    }
+
+    // Update position in activePositions
+    existingPos.entryPrice = newAvgPrice;
+    existingPos.qty = newTotalQty;
+    existingPos.slPrice = newSL;
+    existingPos.trailActivePrice = newTrailActive || existingPos.trailActivePrice;
+    existingPos.dcaLevel = nextLevel;
+    existingPos.lastEntryPrice = price;
+
+    const dcaLabel = `DCA ${nextLevel + 1}/${DCA_SPLITS.length}`;
+    logTrade(liqEvent, 'FILLED', `${dcaLabel} | Avg: ${newAvgPrice} | SL: ${newSL} | Qty: ${newTotalQty}`, execTime, existingPos);
+
+    console.log(
+      `[TRADE] ${dcaLabel} ${tradeSide} +${qty} ${symbol} @ ${price} | Avg: ${newAvgPrice} | SL: ${newSL} | Total: ${newTotalQty} | ${orderVia} | ${execTime}ms`
+    );
+
+    return existingPos;
+  } catch (err) {
+    const execTime = Date.now() - startTime;
+    logTrade(liqEvent, 'ERROR', `DCA: ${err.message}`, execTime);
+    console.error(`[EXECUTOR] DCA error for ${symbol}:`, err.message);
     return null;
   } finally {
     pendingSymbols.delete(symbol);
@@ -529,6 +800,7 @@ function logTrade(liqEvent, status, detail, execTimeMs, position = null) {
       atr: position.atr,
       trailingStop: position.trailingStop,
       tpMethod: position.tpMethod,
+      dcaLevel: position.dcaLevel,
     } : null,
   };
 

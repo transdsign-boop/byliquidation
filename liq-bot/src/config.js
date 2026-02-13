@@ -33,7 +33,7 @@ export const config = {
   // Trading params
   positionSizeUsd: parseFloat(process.env.POSITION_SIZE_USD || '50'),
   takeProfitPct: parseFloat(process.env.TAKE_PROFIT_PCT || '0.3'),
-  stopLossAccountPct: parseFloat(process.env.SL_ACCOUNT_PCT || '3'),
+  stopLossAccountPct: parseFloat(process.env.SL_ACCOUNT_PCT || '2'),
   maxPositions: parseInt(process.env.MAX_POSITIONS || '5'),
   minLiqValueUsd: parseFloat(process.env.MIN_LIQ_VALUE_USD || '10000'),
   minTurnover24h: parseFloat(process.env.MIN_TURNOVER_24H || '5000000'),

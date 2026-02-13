@@ -132,7 +132,7 @@ async function fetchBybitCloseData(symbol, entryOrderId, trackedEntryPrice = 0, 
 // Track close order IDs we've already recorded to prevent duplicate matching
 const usedCloseOrderIds = new Set();
 
-import { getActivePositions, getTradeLog } from './executor.js';
+import { getActivePositions, getTradeLog, getPendingSymbols } from './executor.js';
 
 /**
  * Position Monitor
@@ -217,7 +217,6 @@ export function getStats() {
 
 export async function syncPositions() {
   const activePositions = getActivePositions();
-  if (activePositions.size === 0) return;
 
   try {
     const res = await getPositions();
@@ -230,11 +229,63 @@ export async function syncPositions() {
       }
     }
 
+    // Detect untracked Bybit positions and start tracking them
+    const pendingSymbols = getPendingSymbols();
+    for (const [symbol, p] of bybitPositions) {
+      if (activePositions.has(symbol)) continue;
+      if (pendingSymbols.has(symbol)) continue; // executor is currently processing this symbol
+
+      const entryPrice = parseFloat(p.avgPrice);
+      const size = parseFloat(p.size);
+      const trailDist = parseFloat(p.trailingStop || '0') || null;
+      let trailActive = null;
+      if (trailDist) {
+        const feeBuffer = instrumentCache.roundPrice(symbol, entryPrice * 0.0015);
+        trailActive = p.side === 'Buy'
+          ? instrumentCache.roundPrice(symbol, entryPrice + trailDist + feeBuffer)
+          : instrumentCache.roundPrice(symbol, entryPrice - trailDist - feeBuffer);
+      }
+
+      const position = {
+        symbol,
+        side: p.side,
+        entryPrice,
+        qty: size,
+        tpPrice: parseFloat(p.takeProfit || '0') || null,
+        slPrice: parseFloat(p.stopLoss || '0') || null,
+        orderId: null,
+        openTime: parseInt(p.createdTime) || Date.now(),
+        liqUsdValue: 0,
+        execTimeMs: 0,
+        atr: null,
+        trailingStop: trailDist,
+        trailActivePrice: trailActive,
+        tpMethod: 'detected',
+        unrealisedPnl: parseFloat(p.unrealisedPnl || '0'),
+        markPrice: parseFloat(p.markPrice || '0'),
+        dcaLevel: 0,
+        totalBudget: 0,
+        lastEntryPrice: entryPrice,
+      };
+      activePositions.set(symbol, position);
+
+      console.log(
+        `[MONITOR] Detected untracked position: ${p.side} ${size} ${symbol} @ ${entryPrice} | TP: ${position.tpPrice || '—'} | SL: ${position.slPrice || '—'}`
+      );
+    }
+
     // Check each tracked position
     for (const [symbol, tracked] of activePositions) {
       const bybitPos = bybitPositions.get(symbol);
 
       if (!bybitPos) {
+        // Grace period: skip if position was opened less than 15s ago
+        // (API may not reflect it yet due to race condition with syncPositions)
+        const ageMs = Date.now() - (tracked.openTime || 0);
+        if (ageMs < 15000) {
+          continue;
+        }
+
         // Guard: prevent duplicate close records (e.g. sync runs twice before deletion)
         if (recentlyClosedSymbols.has(symbol) && Date.now() - recentlyClosedSymbols.get(symbol) < 10000) {
           activePositions.delete(symbol);

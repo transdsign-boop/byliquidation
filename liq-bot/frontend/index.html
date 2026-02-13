@@ -184,53 +184,6 @@
   .network-badge.demo { background: var(--cyan); color: #000; }
   .network-badge.mainnet { background: var(--red); color: #fff; }
 
-  .account-switch-bar {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 8px 24px;
-    background: var(--surface2);
-    border-bottom: 1px solid var(--border);
-    font-size: 10px;
-    text-transform: uppercase;
-    letter-spacing: 1px;
-    color: var(--text-dim);
-  }
-
-  .account-switch-bar input {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    color: var(--text);
-    font-family: var(--mono);
-    font-size: 12px;
-    padding: 4px 8px;
-    border-radius: 3px;
-    width: 180px;
-  }
-
-  .account-switch-bar input:focus { outline: none; border-color: var(--cyan); }
-
-  .account-switch-bar button {
-    background: var(--surface);
-    border: 1px solid var(--cyan);
-    color: var(--cyan);
-    font-family: var(--mono);
-    font-size: 11px;
-    font-weight: 600;
-    padding: 4px 14px;
-    border-radius: 3px;
-    cursor: pointer;
-    transition: all 0.15s;
-  }
-
-  .account-switch-bar button:hover { background: var(--cyan); color: var(--bg); }
-
-  .account-switch-bar #switchStatus {
-    font-size: 11px;
-    font-weight: 600;
-    letter-spacing: 0;
-    text-transform: none;
-  }
 
   .grid {
     display: grid;
@@ -405,7 +358,7 @@
   /* Position rows */
   .pos-row {
     display: grid;
-    grid-template-columns: 100px 60px 90px 90px 90px 75px 75px 75px 1fr;
+    grid-template-columns: 100px 35px 60px 90px 90px 90px 75px 75px 75px 1fr;
     gap: 8px;
     padding: 12px 20px;
     border-bottom: 1px solid var(--border);
@@ -427,7 +380,7 @@
   }
 
   .col-header.pos-cols {
-    grid-template-columns: 100px 60px 90px 90px 90px 75px 75px 75px 1fr;
+    grid-template-columns: 100px 35px 60px 90px 90px 90px 75px 75px 75px 1fr;
     gap: 8px;
   }
 
@@ -448,6 +401,38 @@
     font-size: 12px;
   }
 
+  /* Bot activity log */
+  .activity-row {
+    display: grid;
+    grid-template-columns: 80px 95px 65px 1fr 70px;
+    gap: 8px;
+    padding: 7px 20px;
+    border-bottom: 1px solid var(--border);
+    font-size: 11px;
+    align-items: center;
+    animation: fadeIn 0.2s ease;
+  }
+
+  .activity-row:hover { background: var(--surface2); }
+
+  .col-header.activity-cols {
+    grid-template-columns: 80px 95px 65px 1fr 70px;
+    gap: 8px;
+  }
+
+  .status-badge {
+    font-size: 9px;
+    font-weight: 700;
+    padding: 2px 6px;
+    border-radius: 2px;
+    letter-spacing: 0.5px;
+    display: inline-block;
+  }
+  .status-badge.filled { background: var(--green-dim); color: var(--green); }
+  .status-badge.skipped { background: rgba(106,106,128,0.2); color: var(--text-dim); }
+  .status-badge.failed { background: var(--red-dim); color: var(--red); }
+  .status-badge.error { background: var(--red-dim); color: var(--red); }
+
   /* Full-width panels below */
   .bottom-panels {
     display: grid;
@@ -464,11 +449,97 @@
     flex-direction: column;
   }
 
-  @media (max-width: 900px) {
+  /* Mobile inline labels — hidden on desktop */
+  .m-label { display: none; }
+
+  /* ---- Mobile responsive ---- */
+  @media (max-width: 768px) {
+    body { font-size: 12px; }
+
+    /* Header: stack logo above controls */
+    .header {
+      flex-direction: column;
+      gap: 12px;
+      padding: 12px 16px;
+    }
+    .header-right {
+      width: 100%;
+      flex-wrap: wrap;
+      gap: 8px 12px;
+      justify-content: center;
+    }
+    .threshold-control input { width: 70px; font-size: 11px; }
+    .threshold-control label { font-size: 9px; }
+
+    /* Account bar: 2x2 grid */
+    .account-bar { grid-template-columns: 1fr 1fr; }
+    .account-card { padding: 10px 16px; }
+    .account-value { font-size: 15px; }
+
+    /* Stats: 2 cols + 1 */
     .grid { grid-template-columns: repeat(2, 1fr); }
-    .account-bar { grid-template-columns: repeat(2, 1fr); }
+    .stat-card { padding: 14px 16px; }
+    .stat-value { font-size: 22px; }
+
+    /* Main content: single column */
     .main-content { grid-template-columns: 1fr; }
-    .trade-row { grid-template-columns: 75px 85px 45px 1fr 70px 65px 65px 70px 55px 45px; }
+    .panel { max-height: 50vh; }
+    .panel.compact { max-height: 35vh; }
+    .positions-panel { max-height: 50vh !important; }
+
+    /* Position rows: card layout */
+    .col-header.pos-cols { display: none; }
+    .pos-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px 12px;
+      padding: 10px 16px;
+      font-size: 11px;
+    }
+    .pos-row .symbol { font-size: 13px; }
+
+    /* Trade rows: card layout */
+    .col-header.trade-cols { display: none; }
+    .trade-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px 10px;
+      padding: 10px 16px;
+      font-size: 11px;
+    }
+
+    /* Activity rows: card layout */
+    .col-header.activity-cols { display: none; }
+    .activity-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px 10px;
+      padding: 8px 16px;
+      font-size: 11px;
+    }
+
+    /* Liquidation rows */
+    .liq-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px 10px;
+      padding: 8px 16px;
+      font-size: 11px;
+    }
+
+    .empty-state { padding: 24px 16px; }
+    .panel-header { padding: 10px 16px; font-size: 10px; }
+    .col-header { padding: 6px 16px; }
+
+    /* Show inline labels on mobile */
+    .m-label {
+      display: inline;
+      color: var(--text-dim);
+      font-size: 9px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin-right: 2px;
+    }
   }
 </style>
 </head>
@@ -521,14 +592,6 @@
   </div>
 </div>
 
-<div class="account-switch-bar">
-  <label>API Key</label>
-  <input type="text" id="switchApiKey" placeholder="API Key" autocomplete="off">
-  <label>Secret</label>
-  <input type="password" id="switchApiSecret" placeholder="API Secret" autocomplete="off">
-  <button id="switchAccountBtn">Switch Account</button>
-  <span id="switchStatus"></span>
-</div>
 
 <div class="account-bar">
   <div class="account-card">
@@ -580,6 +643,7 @@
     </div>
     <div class="col-header pos-cols">
       <span>Symbol</span>
+      <span>DCA</span>
       <span>Side</span>
       <span>TP</span>
       <span>SL</span>
@@ -601,6 +665,25 @@
     </div>
     <div class="panel-body" id="liqFeedBody">
       <div class="empty-state">Waiting for liquidation events...</div>
+    </div>
+  </div>
+</div>
+
+<!-- Bot Activity Log -->
+<div class="bottom-panels">
+  <div class="positions-panel" style="max-height:30vh">
+    <div class="panel-header">
+      Bot Activity <span class="count" id="activityCount">0</span>
+    </div>
+    <div class="col-header activity-cols">
+      <span>Time</span>
+      <span>Symbol</span>
+      <span>Status</span>
+      <span>Detail</span>
+      <span>Liq Size</span>
+    </div>
+    <div class="panel-body" id="activityBody">
+      <div class="empty-state">Waiting for bot activity...</div>
     </div>
   </div>
 </div>
@@ -721,17 +804,24 @@
       const uPnlColor = uPnl >= 0 ? 'var(--green)' : 'var(--red)';
       const uPnlDisplay = (uPnl >= 0 ? '+' : '') + uPnl.toFixed(4);
 
+      const dcaLevel = (p.dcaLevel || 0) + 1;
+      const dcaTotal = 3;
+      const dcaColor = dcaLevel >= dcaTotal ? 'var(--green)' : 'var(--yellow)';
+      const ml = '<span class="m-label">';
+      const mle = '</span>';
+
       return `
         <div class="pos-row">
           <span class="symbol">${p.symbol}</span>
+          <span style="color:${dcaColor};font-weight:600;font-size:11px">${ml}DCA ${mle}${dcaLevel}/${dcaTotal}</span>
           <span class="${p.side === 'Buy' ? 'side-buy' : 'side-sell'}">${p.side}</span>
-          <span>${p.tpPrice || '—'} <span style="color:var(--text-dim);font-size:10px">[${methodTag}]</span></span>
-          <span style="color:var(--red)">${p.slPrice || '—'}</span>
-          <span style="color:var(--yellow)">${trailDisplay}</span>
-          <span style="color:${uPnlColor};font-weight:600">${uPnlDisplay}</span>
-          <span style="color:var(--text-dim)">${atrDisplay}</span>
-          <span class="countdown ${countdownClass}">${remaining.toFixed(0)}s</span>
-          <span style="color:var(--text-dim)">${holdSec.toFixed(0)}s</span>
+          <span>${ml}TP ${mle}${p.tpPrice || '—'} <span style="color:var(--text-dim);font-size:10px">[${methodTag}]</span></span>
+          <span style="color:var(--red)">${ml}SL ${mle}${p.slPrice || '—'}</span>
+          <span style="color:var(--yellow)">${ml}Trail ${mle}${trailDisplay}</span>
+          <span style="color:${uPnlColor};font-weight:600">${ml}uPnL ${mle}${uPnlDisplay}</span>
+          <span style="color:var(--text-dim)">${ml}ATR ${mle}${atrDisplay}</span>
+          <span class="countdown ${countdownClass}">${ml}Left ${mle}${remaining.toFixed(0)}s</span>
+          <span style="color:var(--text-dim)">${ml}Hold ${mle}${holdSec.toFixed(0)}s</span>
         </div>
       `;
     }).join('');
@@ -751,7 +841,7 @@
       ? `<span style="font-size:9px;font-weight:600;padding:1px 4px;border-radius:2px;background:var(--red-dim);color:var(--red);letter-spacing:0.5px;margin-left:4px">${liq.blocked}</span>`
       : '';
     row.innerHTML = `
-      <span style="color:var(--text-dim)">${new Date(liq.timestamp).toLocaleTimeString()}</span>
+      <span style="color:var(--text-dim)">${formatTime(liq.timestamp)}</span>
       <span class="symbol">${liq.symbol}${blockedTag}</span>
       <span class="${liq.side === 'Buy' ? 'side-sell' : 'side-buy'}">${liq.side === 'Buy' ? 'LONG LIQ' : 'SHORT LIQ'}</span>
       <span>@ ${liq.price}</span>
@@ -819,18 +909,20 @@
         const liqDisplay = liqVal >= 1000 ? '$' + (liqVal / 1000).toFixed(1) + 'K' : '$' + liqVal.toFixed(0);
         const holdSec = t.holdTimeMs ? (t.holdTimeMs / 1000).toFixed(0) + 's' : '—';
 
+        const ml = '<span class="m-label">';
+        const mle = '</span>';
         return `
           <div class="trade-row">
-            <span class="time">${new Date(t.closedAt).toLocaleTimeString()}</span>
+            <span class="time">${formatTime(t.closedAt)}</span>
             <span class="symbol">${t.symbol}</span>
             <span class="${t.side === 'Buy' ? 'side-buy' : 'side-sell'}">${t.side}</span>
             <span style="color:var(--text-dim)">${t.exitType} <span style="font-size:10px">[${t.tpMethod || '—'}]</span></span>
-            <span style="${grossClass};font-weight:600">${grossDisplay}</span>
-            <span style="color:${openFeeColor};font-size:11px">${openFeeDisplay} <span class="${entryTag}">${entryLabel}</span></span>
-            <span style="color:${closeFeeColor};font-size:11px">${closeFeeDisplay} <span class="${exitTag}">${exitLabel}</span></span>
-            <span style="${netClass};font-weight:600">${netDisplay}</span>
-            <span class="value">${liqDisplay}</span>
-            <span style="color:var(--text-dim)">${holdSec}</span>
+            <span style="${grossClass};font-weight:600">${ml}Gross ${mle}${grossDisplay}</span>
+            <span style="color:${openFeeColor};font-size:11px">${ml}Open ${mle}${openFeeDisplay} <span class="${entryTag}">${entryLabel}</span></span>
+            <span style="color:${closeFeeColor};font-size:11px">${ml}Close ${mle}${closeFeeDisplay} <span class="${exitTag}">${exitLabel}</span></span>
+            <span style="${netClass};font-weight:600">${ml}Net ${mle}${netDisplay}</span>
+            <span class="value">${ml}Liq ${mle}${liqDisplay}</span>
+            <span style="color:var(--text-dim)">${ml}Hold ${mle}${holdSec}</span>
           </div>
         `;
       }).join('');
@@ -1015,53 +1107,59 @@
     } catch (err) {}
   });
 
-  // Account switch
-  document.getElementById('switchAccountBtn').addEventListener('click', async () => {
-    const apiKey = document.getElementById('switchApiKey').value.trim();
-    const apiSecret = document.getElementById('switchApiSecret').value.trim();
-    const statusEl = document.getElementById('switchStatus');
-    if (!apiKey || !apiSecret) {
-      statusEl.textContent = 'Enter both key & secret';
-      statusEl.style.color = 'var(--red)';
-      return;
-    }
-    statusEl.textContent = 'Switching...';
-    statusEl.style.color = 'var(--yellow)';
-    try {
-      const res = await fetch('/api/account-switch', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ apiKey, apiSecret }),
-      });
-      const data = await res.json();
-      if (data.ok) {
-        statusEl.textContent = 'Switched! Balance: $' + parseFloat(data.balance || 0).toFixed(2);
-        statusEl.style.color = 'var(--green)';
-        loadTradeLog();
-        loadConfig();
-      } else {
-        statusEl.textContent = data.error || 'Switch failed';
-        statusEl.style.color = 'var(--red)';
-      }
-    } catch (err) {
-      statusEl.textContent = 'Network error';
-      statusEl.style.color = 'var(--red)';
-    }
-    setTimeout(() => { statusEl.textContent = ''; }, 5000);
-  });
 
-  // Clock
+  // Format time in LA timezone
+  const LA_TZ = 'America/Los_Angeles';
+  function formatTime(date) {
+    return new Date(date).toLocaleTimeString('en-US', { timeZone: LA_TZ });
+  }
+
+  // Clock (LA time)
   setInterval(() => {
     document.getElementById('clockDisplay').textContent =
-      new Date().toLocaleTimeString();
+      formatTime(new Date()) + ' PT';
   }, 1000);
 
-  // Refresh trade log periodically
+  // Load bot activity log from executor trade log
+  async function loadActivity() {
+    try {
+      const res = await fetch('/api/trades');
+      const trades = await res.json();
+      const body = document.getElementById('activityBody');
+
+      document.getElementById('activityCount').textContent = trades.length;
+
+      if (trades.length === 0) {
+        body.innerHTML = '<div class="empty-state">Waiting for bot activity...</div>';
+        return;
+      }
+
+      body.innerHTML = trades.map(t => {
+        const statusLower = (t.status || '').toLowerCase();
+        const liqVal = t.liqUsdValue || 0;
+        const liqDisplay = liqVal >= 1000 ? '$' + (liqVal / 1000).toFixed(1) + 'K' : '$' + liqVal.toFixed(0);
+
+        return `
+          <div class="activity-row">
+            <span style="color:var(--text-dim)">${formatTime(t.timestamp)}</span>
+            <span style="color:var(--cyan);font-weight:600">${t.symbol}</span>
+            <span><span class="status-badge ${statusLower}">${t.status}</span></span>
+            <span style="color:var(--text-dim);word-break:break-word">${t.detail || '—'}</span>
+            <span style="color:var(--yellow)">${liqDisplay}</span>
+          </div>
+        `;
+      }).join('');
+    } catch (e) {}
+  }
+
+  // Refresh trade log and activity periodically
   setInterval(loadTradeLog, 5000);
+  setInterval(loadActivity, 3000);
 
   // Init
   loadConfig();
   loadTradeLog();
+  loadActivity();
   connect();
 </script>
 </body>
