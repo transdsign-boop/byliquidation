@@ -3,13 +3,13 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { config } from './config.js';
 import { LiquidationScanner } from './core/scanner.js';
-import { executeTrade, getTradeLog, resetTradeLog, getActivePositions, setInitialBalance, loadExistingPositions, hydrateTradeLog, hydratePositions, resetExecutorState } from './core/executor.js';
-import { startMonitor, getStats, getPnlHistory, getTotalPnl, hydratePnl, resetPnl, reconcilePnl, resetMonitorState } from './core/monitor.js';
+import { executeTrade, getTradeLog, resetTradeLog, getActivePositions, setInitialBalance, loadExistingPositions, hydrateTradeLog, getPositionState, hydratePositionState } from './core/executor.js';
+import { startMonitor, getStats, getPnlHistory, getTotalPnl, hydratePnl, resetPnl, reconcilePnl } from './core/monitor.js';
 import { startPersistence, saveJSON, loadJSON } from './core/persistence.js';
 import { instrumentCache } from './core/instruments.js';
 import { loadVolumes, isLowVolume } from './core/volume-filter.js';
 import { getWalletBalance } from './api/bybit.js';
-import { connectTradeWs, disconnectTradeWs } from './api/ws-trade.js';
+import { connectTradeWs } from './api/ws-trade.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -24,41 +24,31 @@ async function main() {
   console.log(`  Min liq value: $${config.minLiqValueUsd}`);
   console.log(`  Min 24h volume: $${(config.minTurnover24h / 1e6).toFixed(1)}M`);
   console.log(`  Leverage: ${config.leverage}x`);
-  console.log(`  SL max risk: ${config.stopLossAccountPct}% of balance`);
+  console.log(`  Total risk budget: ${config.totalRiskPct}% of balance`);
   console.log(`  ATR period: ${config.atrPeriod} (${config.atrInterval}m candles)`);
   console.log(`  TP multiplier: ${config.tpAtrMultiplier}x ATR`);
   console.log(`  Trailing stop: ${config.trailingAtrMultiplier}x ATR`);
-  console.log(`  Max hold time: ${config.maxHoldSeconds === 0 ? 'DISABLED' : config.maxHoldSeconds + 's'}`);
   console.log('===========================================');
 
-  // 0. Restore persisted data from disk (including active positions)
-  const saved = startPersistence({ getTradeLog, getPnlHistory, getTotalPnl, getActivePositions });
+  // 0. Restore persisted data from disk
+  const saved = startPersistence({ getTradeLog, getPnlHistory, getTotalPnl, getPositionState });
   hydrateTradeLog(saved.tradeLog);
   hydratePnl(saved.pnlHistory, saved.totalPnl);
-  hydratePositions(saved.activePositions);
 
   // 0b. Restore runtime config overrides from disk
   const savedConfig = loadJSON('config_overrides.json');
   if (savedConfig) {
     if (savedConfig.minLiqValueUsd != null) config.minLiqValueUsd = savedConfig.minLiqValueUsd;
-    if (savedConfig.maxHoldSeconds != null) config.maxHoldSeconds = savedConfig.maxHoldSeconds;
     if (savedConfig.maxPositions != null) config.maxPositions = savedConfig.maxPositions;
     if (savedConfig.trailingAtrMultiplier != null) config.trailingAtrMultiplier = savedConfig.trailingAtrMultiplier;
     if (savedConfig.atrInterval != null) config.atrInterval = String(savedConfig.atrInterval);
     if (savedConfig.entryOrderType != null) config.entryOrderType = savedConfig.entryOrderType;
     if (savedConfig.tpOrderType != null) config.tpOrderType = savedConfig.tpOrderType;
-    if (savedConfig.timeExitOrderType != null) config.timeExitOrderType = savedConfig.timeExitOrderType;
     if (savedConfig.minTurnover24h != null) config.minTurnover24h = savedConfig.minTurnover24h;
-    console.log(`[CONFIG] Restored overrides from disk: minLiq=$${config.minLiqValueUsd}, maxHold=${config.maxHoldSeconds}s`);
+    console.log(`[CONFIG] Restored overrides from disk: minLiq=$${config.minLiqValueUsd}`);
   }
 
-  // 0c. Restore account credentials from disk (survives redeploy)
-  const savedAccount = loadJSON('account_credentials.json');
-  if (savedAccount && savedAccount.apiKey && savedAccount.apiSecret) {
-    config.apiKey = savedAccount.apiKey;
-    config.apiSecret = savedAccount.apiSecret;
-    console.log(`[CONFIG] Restored account credentials from disk (key: ...${savedAccount.apiKey.slice(-4)})`);
-  }
+  // API credentials come from environment secrets only (fly secrets)
 
   // 1. Load instrument info
   await instrumentCache.load();
@@ -81,6 +71,10 @@ async function main() {
 
   // 1c. Load any existing positions from Bybit into tracking
   await loadExistingPositions();
+
+  // 1c2. Restore DCA state (dcaLevel, totalBudget, atr) from disk
+  const savedPositionState = loadJSON('position_state.json');
+  hydratePositionState(savedPositionState);
 
   // 1d. Reconcile pnlHistory with Bybit — backfill any missed trades
   await reconcilePnl();
@@ -167,11 +161,9 @@ async function main() {
       atrInterval: config.atrInterval,
       tpAtrMultiplier: config.tpAtrMultiplier,
       trailingAtrMultiplier: config.trailingAtrMultiplier,
-      maxHoldSeconds: config.maxHoldSeconds,
       maxPositions: config.maxPositions,
       entryOrderType: config.entryOrderType,
       tpOrderType: config.tpOrderType,
-      timeExitOrderType: config.timeExitOrderType,
       minTurnover24h: config.minTurnover24h,
       leverage: config.leverage,
     });
@@ -182,20 +174,13 @@ async function main() {
   app.post('/api/config', (req, res) => {
     const updates = {};
 
-    const { minLiqValueUsd, maxHoldSeconds, maxPositions, trailingAtrMultiplier, atrInterval, entryOrderType, tpOrderType, timeExitOrderType, minTurnover24h, leverage } = req.body;
+    const { minLiqValueUsd, maxPositions, trailingAtrMultiplier, atrInterval, entryOrderType, tpOrderType, minTurnover24h } = req.body;
 
     if (minLiqValueUsd != null && typeof minLiqValueUsd === 'number' && minLiqValueUsd >= 0) {
       const old = config.minLiqValueUsd;
       config.minLiqValueUsd = minLiqValueUsd;
       console.log(`[CONFIG] Min liq threshold changed: $${old} → $${minLiqValueUsd}`);
       updates.minLiqValueUsd = minLiqValueUsd;
-    }
-
-    if (maxHoldSeconds != null && typeof maxHoldSeconds === 'number' && maxHoldSeconds >= 0) {
-      const old = config.maxHoldSeconds;
-      config.maxHoldSeconds = maxHoldSeconds;
-      console.log(`[CONFIG] Max hold time changed: ${old}s → ${maxHoldSeconds}s`);
-      updates.maxHoldSeconds = maxHoldSeconds;
     }
 
     if (maxPositions != null && typeof maxPositions === 'number' && maxPositions >= 1) {
@@ -233,25 +218,11 @@ async function main() {
       updates.tpOrderType = tpOrderType;
     }
 
-    if (timeExitOrderType != null && (timeExitOrderType === 'Market' || timeExitOrderType === 'Limit')) {
-      const old = config.timeExitOrderType;
-      config.timeExitOrderType = timeExitOrderType;
-      console.log(`[CONFIG] Time exit order type changed: ${old} → ${timeExitOrderType}`);
-      updates.timeExitOrderType = timeExitOrderType;
-    }
-
     if (minTurnover24h != null && typeof minTurnover24h === 'number' && minTurnover24h >= 0) {
       const old = config.minTurnover24h;
       config.minTurnover24h = minTurnover24h;
       console.log(`[CONFIG] Min turnover 24h changed: $${old} → $${minTurnover24h}`);
       updates.minTurnover24h = minTurnover24h;
-    }
-
-    if (leverage != null && typeof leverage === 'number' && leverage >= 1 && leverage <= 100) {
-      const old = config.leverage;
-      config.leverage = leverage;
-      console.log(`[CONFIG] Leverage changed: ${old}x → ${leverage}x`);
-      updates.leverage = leverage;
     }
 
     if (Object.keys(updates).length > 0) {
@@ -278,86 +249,6 @@ async function main() {
     res.json({ ok: true });
   });
 
-  // API: update position DCA level and budget (for fixing positions after restart)
-  app.post('/api/position/:symbol', (req, res) => {
-    const { symbol } = req.params;
-    const { dcaLevel, totalBudget } = req.body;
-    const positions = getActivePositions();
-    const pos = positions.get(symbol);
-
-    if (!pos) {
-      return res.status(404).json({ ok: false, error: `Position not found: ${symbol}` });
-    }
-
-    const updates = {};
-    if (dcaLevel != null && typeof dcaLevel === 'number' && dcaLevel >= 0 && dcaLevel <= 3) {
-      pos.dcaLevel = dcaLevel;
-      updates.dcaLevel = dcaLevel;
-      console.log(`[API] ${symbol} dcaLevel updated to ${dcaLevel}`);
-    }
-    if (totalBudget != null && typeof totalBudget === 'number' && totalBudget > 0) {
-      pos.totalBudget = totalBudget;
-      updates.totalBudget = totalBudget;
-      console.log(`[API] ${symbol} totalBudget updated to $${totalBudget.toFixed(2)}`);
-    }
-
-    if (Object.keys(updates).length > 0) {
-      res.json({ ok: true, symbol, ...updates });
-    } else {
-      res.status(400).json({ ok: false, error: 'No valid fields provided (dcaLevel: 0-3, totalBudget: number)' });
-    }
-  });
-
-  // API: switch Bybit account (new API key/secret) at runtime
-  app.post('/api/account-switch', async (req, res) => {
-    const { apiKey, apiSecret } = req.body;
-    if (!apiKey || !apiSecret || typeof apiKey !== 'string' || typeof apiSecret !== 'string') {
-      return res.status(400).json({ ok: false, error: 'apiKey and apiSecret are required' });
-    }
-
-    try {
-      console.log('[ACCOUNT-SWITCH] Switching account...');
-
-      // 1. Update config credentials and persist to disk
-      config.apiKey = apiKey;
-      config.apiSecret = apiSecret;
-      saveJSON('account_credentials.json', { apiKey, apiSecret });
-
-      // 2. Reset ALL state — fresh start for new account
-      resetExecutorState();
-      resetMonitorState();
-
-      // 3. Wipe ALL persisted data (trade data + config overrides)
-      saveJSON('trade_log.json', []);
-      saveJSON('pnl_history.json', []);
-      saveJSON('total_pnl.json', 0);
-      saveJSON('config_overrides.json', {});
-
-      // 4. Reconnect trade WS with new credentials
-      disconnectTradeWs();
-      connectTradeWs();
-
-      // 5. Fetch new wallet balance
-      const walletRes = await getWalletBalance();
-      let balance = 0;
-      if (walletRes.retCode === 0 && walletRes.result?.list?.[0]) {
-        balance = parseFloat(walletRes.result.list[0].totalWalletBalance);
-        setInitialBalance(balance);
-      } else {
-        console.warn('[ACCOUNT-SWITCH] Could not fetch wallet balance:', walletRes.retMsg);
-      }
-
-      // 6. Load fresh data from new account
-      await loadExistingPositions();
-      await reconcilePnl();
-
-      console.log(`[ACCOUNT-SWITCH] Done. Balance: $${balance.toFixed(2)}`);
-      res.json({ ok: true, balance });
-    } catch (err) {
-      console.error('[ACCOUNT-SWITCH] Error:', err.message);
-      res.status(500).json({ ok: false, error: err.message });
-    }
-  });
 
   // Account balance
   let cachedAccount = null;

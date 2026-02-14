@@ -33,7 +33,7 @@ export const config = {
   // Trading params
   positionSizeUsd: parseFloat(process.env.POSITION_SIZE_USD || '50'),
   takeProfitPct: parseFloat(process.env.TAKE_PROFIT_PCT || '0.3'),
-  stopLossAccountPct: parseFloat(process.env.SL_ACCOUNT_PCT || '2'),
+  totalRiskPct: parseFloat(process.env.TOTAL_RISK_PCT || '5'),
   maxPositions: parseInt(process.env.MAX_POSITIONS || '5'),
   minLiqValueUsd: parseFloat(process.env.MIN_LIQ_VALUE_USD || '10000'),
   minTurnover24h: parseFloat(process.env.MIN_TURNOVER_24H || '5000000'),
@@ -48,12 +48,11 @@ export const config = {
   atrInterval: process.env.ATR_INTERVAL || '1',
   tpAtrMultiplier: parseFloat(process.env.TP_ATR_MULTIPLIER || '1.5'),
   trailingAtrMultiplier: parseFloat(process.env.TRAILING_ATR_MULTIPLIER || '0.5'),
-  maxHoldSeconds: parseInt(process.env.MAX_HOLD_SECONDS || '60'),
+  dcaVwapSdMultiplier: parseFloat(process.env.DCA_VWAP_SD || '2'),
 
   // Order types: 'Market' or 'Limit' (Limit uses PostOnly for maker fees)
   entryOrderType: process.env.ENTRY_ORDER_TYPE || 'Limit',
   tpOrderType: process.env.TP_ORDER_TYPE || 'Limit',
-  timeExitOrderType: process.env.TIME_EXIT_ORDER_TYPE || 'Limit',
 
   // Ports
   dashboardPort: parseInt(process.env.DASHBOARD_PORT || '3000'),

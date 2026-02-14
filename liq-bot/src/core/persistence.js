@@ -46,38 +46,27 @@ export function loadJSON(name, fallback = null) {
  */
 let saveInterval = null;
 
-export function startPersistence({ getTradeLog, getPnlHistory, getTotalPnl, getActivePositions }) {
+export function startPersistence({ getTradeLog, getPnlHistory, getTotalPnl, getPositionState }) {
   // Load existing data on startup
   const savedPnl = loadJSON('pnl_history.json');
   const savedTrades = loadJSON('trade_log.json');
   const savedTotalPnl = loadJSON('total_pnl.json');
-  const savedPositions = loadJSON('active_positions.json');
 
   console.log(`[PERSIST] Data dir: ${DATA_DIR}`);
   if (savedPnl) console.log(`[PERSIST] Loaded ${savedPnl.length} PnL records from disk.`);
   if (savedTrades) console.log(`[PERSIST] Loaded ${savedTrades.length} trade log entries from disk.`);
-  if (savedPositions) console.log(`[PERSIST] Loaded ${Object.keys(savedPositions).length} active position(s) from disk.`);
 
   // Save every 10 seconds
   saveInterval = setInterval(() => {
     saveJSON('trade_log.json', getTradeLog());
     saveJSON('pnl_history.json', getPnlHistory());
     saveJSON('total_pnl.json', getTotalPnl());
-    // Save active positions as object (Map -> Object for JSON)
-    if (getActivePositions) {
-      const posMap = getActivePositions();
-      const posObj = {};
-      for (const [k, v] of posMap.entries()) {
-        posObj[k] = v;
-      }
-      saveJSON('active_positions.json', posObj);
-    }
+    if (getPositionState) saveJSON('position_state.json', getPositionState());
   }, 10000);
 
   return {
     pnlHistory: savedPnl || [],
     tradeLog: savedTrades || [],
     totalPnl: savedTotalPnl || 0,
-    activePositions: savedPositions || {},
   };
 }
