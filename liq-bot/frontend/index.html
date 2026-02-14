@@ -560,10 +560,6 @@
       <input type="number" id="minVolInput" min="0" step="1000000" value="5000000">
     </div>
     <div class="threshold-control">
-      <label>Timed Exit (s)</label>
-      <input type="number" id="maxHoldInput" min="0" step="5" value="60">
-    </div>
-    <div class="threshold-control">
       <label>Max Pos</label>
       <input type="number" id="maxPosInput" min="1" step="1" value="5">
     </div>
@@ -586,10 +582,6 @@
     <div class="threshold-control">
       <label>TP</label>
       <button class="order-toggle" id="tpTypeToggle">LMT</button>
-    </div>
-    <div class="threshold-control">
-      <label>Exit</label>
-      <button class="order-toggle" id="exitTypeToggle">LMT</button>
     </div>
     <span class="network-badge" id="networkBadge">—</span>
     <span id="clockDisplay">--:--:--</span>
@@ -785,8 +777,6 @@
     document.getElementById('totalFees').textContent = fees.toFixed(4);
   }
 
-  let maxHoldSeconds = 60; // default, updated from config
-
   function updatePositions(positions) {
     const body = document.getElementById('positionsBody');
     document.getElementById('posCount').textContent = positions.length;
@@ -800,8 +790,6 @@
       // Defensive: handle missing/invalid openTime
       const openTime = p.openTime && p.openTime > 0 ? p.openTime : Date.now();
       const holdSec = Math.max(0, (Date.now() - openTime) / 1000);
-      const remaining = maxHoldSeconds > 0 ? Math.max(0, maxHoldSeconds - holdSec) : Infinity;
-      const countdownClass = maxHoldSeconds === 0 ? '' : (remaining <= 10 ? 'critical' : remaining <= 30 ? 'warning' : '');
       const atrDisplay = p.atr ? p.atr.toFixed(6) : '—';
       const trailDisplay = p.trailingStop || '—';
       const methodTag = p.tpMethod === 'ATR' ? 'ATR' : 'FIX';
@@ -826,7 +814,6 @@
           <span style="color:var(--yellow)">${ml}Trail ${mle}${trailDisplay}</span>
           <span style="color:${uPnlColor};font-weight:600">${ml}uPnL ${mle}${uPnlDisplay}</span>
           <span style="color:var(--text-dim)">${ml}ATR ${mle}${atrDisplay}</span>
-          <span class="countdown ${countdownClass}">${ml}Left ${mle}${maxHoldSeconds === 0 ? 'OFF' : remaining.toFixed(0) + 's'}</span>
           <span style="color:var(--text-dim)">${ml}Hold ${mle}${holdSec.toFixed(0)}s</span>
         </div>
       `;
@@ -943,10 +930,6 @@
       const badge = document.getElementById('networkBadge');
       badge.textContent = cfg.network;
       badge.className = 'network-badge ' + cfg.network;
-      if (cfg.maxHoldSeconds != null) {
-        maxHoldSeconds = cfg.maxHoldSeconds;
-        document.getElementById('maxHoldInput').value = cfg.maxHoldSeconds;
-      }
       if (cfg.minLiqValueUsd) {
         document.getElementById('minLiqInput').value = cfg.minLiqValueUsd;
       }
@@ -968,7 +951,6 @@
       // Order type toggles
       setToggle('entryTypeToggle', cfg.entryOrderType || 'Limit');
       setToggle('tpTypeToggle', cfg.tpOrderType || 'Limit');
-      setToggle('exitTypeToggle', cfg.timeExitOrderType || 'Limit');
     } catch (e) {}
   }
 
@@ -1005,7 +987,6 @@
 
   document.getElementById('entryTypeToggle').addEventListener('click', () => toggleOrderType('entryTypeToggle', 'entryOrderType'));
   document.getElementById('tpTypeToggle').addEventListener('click', () => toggleOrderType('tpTypeToggle', 'tpOrderType'));
-  document.getElementById('exitTypeToggle').addEventListener('click', () => toggleOrderType('exitTypeToggle', 'timeExitOrderType'));
 
   // Min liq threshold — update on change
   document.getElementById('minLiqInput').addEventListener('change', async (e) => {
@@ -1037,25 +1018,6 @@
       });
       const data = await res.json();
       if (data.ok) {
-        e.target.style.borderColor = 'var(--green)';
-        setTimeout(() => e.target.style.borderColor = '', 1000);
-      }
-    } catch (err) {}
-  });
-
-  // Max hold seconds — update on change
-  document.getElementById('maxHoldInput').addEventListener('change', async (e) => {
-    const val = parseFloat(e.target.value);
-    if (isNaN(val) || val < 0) return;
-    try {
-      const res = await fetch('/api/config', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ maxHoldSeconds: val }),
-      });
-      const data = await res.json();
-      if (data.ok) {
-        maxHoldSeconds = val;
         e.target.style.borderColor = 'var(--green)';
         setTimeout(() => e.target.style.borderColor = '', 1000);
       }

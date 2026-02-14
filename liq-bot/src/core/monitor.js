@@ -153,8 +153,10 @@ async function ensureProtectionOnPosition(symbol, side, entryPrice, qty) {
     return null;
   }
 
-  // Calculate SL: max loss = stopLossAccountPct% of balance
-  const maxLossUsd = balance * (config.stopLossAccountPct / 100);
+  // Calculate SL: shared risk budget = totalRiskPct% of balance / number of positions
+  const activePositions = getActivePositions();
+  const positionCount = Math.max(1, activePositions.size);
+  const maxLossUsd = (balance * (config.totalRiskPct / 100)) / positionCount;
   let slOffset = maxLossUsd / qty;
 
   // Ensure SL offset is at least 1 tick
@@ -263,10 +265,6 @@ export function hydratePnl(savedHistory, savedTotal) {
   }
 }
 
-// Read dynamically so runtime changes via API take effect
-function getMaxHoldTimeMs() {
-  return config.maxHoldSeconds * 1000;
-}
 
 export function getPnlHistory() {
   return pnlHistory;
@@ -480,92 +478,6 @@ export async function syncPositions() {
         }
       }
 
-      // Position still open — check time-based forced exit (0 = disabled)
-      const maxHoldMs = getMaxHoldTimeMs();
-      const holdTimeMs = Date.now() - tracked.openTime;
-      if (maxHoldMs > 0 && holdTimeMs > maxHoldMs) {
-        // Skip time exit if trailing stop has activated (position in profit, let trail handle it)
-        const uPnl = tracked.unrealisedPnl || 0;
-        const markPrice = tracked.markPrice || 0;
-        let trailActivated = false;
-        if (tracked.trailingStop && tracked.trailActivePrice && markPrice > 0) {
-          trailActivated = tracked.side === 'Buy'
-            ? markPrice >= tracked.trailActivePrice
-            : markPrice <= tracked.trailActivePrice;
-        }
-
-        if (uPnl > 0 && trailActivated) {
-          console.log(`[MONITOR] ${symbol} held ${(holdTimeMs / 1000).toFixed(0)}s but in profit (uPnl: ${uPnl.toFixed(4)}) with trailing active — skipping time exit`);
-          continue;
-        }
-
-        console.log(`[MONITOR] ${symbol} held for ${(holdTimeMs / 1000).toFixed(0)}s — force-closing (uPnl: ${uPnl.toFixed(4)}, trail active: ${trailActivated})...`);
-
-        // Mark as closing BEFORE async ops to prevent duplicate from "position gone" path
-        recentlyClosedSymbols.set(symbol, Date.now());
-
-        try {
-          let closed = false;
-          const exitType = config.timeExitOrderType || 'Market';
-
-          if (exitType === 'Limit') {
-            // Try limit close (PostOnly for maker fee)
-            let limitPrice = null;
-            try {
-              const ob = await getOrderbook(symbol, 1);
-              if (ob.retCode === 0 && ob.result) {
-                // Close Buy → Sell at best ask (maker); Close Sell → Buy at best bid (maker)
-                limitPrice = tracked.side === 'Buy'
-                  ? parseFloat(ob.result.a[0][0])
-                  : parseFloat(ob.result.b[0][0]);
-                limitPrice = instrumentCache.roundPrice(symbol, limitPrice);
-              }
-            } catch (err) {
-              console.warn(`[MONITOR] Orderbook error for ${symbol} on TIME_EXIT:`, err.message);
-            }
-
-            if (limitPrice) {
-              const limitClose = await closePosition(symbol, tracked.side, tracked.qty, 'Limit', limitPrice);
-              if (limitClose.retCode === 0) {
-                await new Promise(r => setTimeout(r, 2000));
-
-                // Check if position still exists (limit may not have filled)
-                const posCheck = await getPositions();
-                const stillOpen = posCheck.retCode === 0 &&
-                  posCheck.result.list.some(p => p.symbol === symbol && parseFloat(p.size) > 0);
-
-                if (stillOpen) {
-                  await cancelOrder(symbol, limitClose.result.orderId).catch(() => {});
-                  console.log(`[MONITOR] Limit close not filled for ${symbol}, falling back to market`);
-                } else {
-                  closed = true;
-                  console.log(`[MONITOR] ${symbol} limit-closed @ ${limitPrice} (maker fee)`);
-                }
-              }
-            }
-          }
-
-          // Market close (default or fallback from limit)
-          if (!closed) {
-            const closeResult = await closePosition(symbol, tracked.side, tracked.qty);
-            if (closeResult.retCode !== 0) {
-              console.error(`[MONITOR] Force-close failed for ${symbol}: ${closeResult.retMsg}`);
-              continue;
-            }
-          }
-
-          // Wait for Bybit to settle, then fetch all close data from Bybit APIs
-          await new Promise(r => setTimeout(r, 2500));
-          const closeData = await fetchBybitCloseData(symbol, tracked.orderId, tracked.entryPrice, tracked.qty);
-          recordClose(symbol, tracked, closeData, 'TIME_EXIT');
-
-          console.log(
-            `[MONITOR] ${symbol} force-closed | PnL: ${closeData.pnl.toFixed(4)} | Fees: ${closeData.fees.total.toFixed(4)} | Held: ${(holdTimeMs / 1000).toFixed(0)}s`
-          );
-        } catch (err) {
-          console.error(`[MONITOR] Force-close error for ${symbol}:`, err.message);
-        }
-      }
     }
   } catch (err) {
     console.error('[MONITOR] Sync error:', err.message);
@@ -725,7 +637,6 @@ export async function reconcilePnl() {
 
 // Start polling positions every 2 seconds
 export function startMonitor() {
-  const holdMsg = config.maxHoldSeconds === 0 ? 'DISABLED' : `${config.maxHoldSeconds}s max hold`;
-  console.log(`[MONITOR] Starting position monitor (2s interval, ${holdMsg})...`);
+  console.log(`[MONITOR] Starting position monitor (2s interval)...`);
   setInterval(syncPositions, 2000);
 }
