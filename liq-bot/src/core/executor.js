@@ -271,9 +271,9 @@ export async function executeTrade(liqEvent) {
     // Price improvement check using VWAP bands
     const vwapData = await getVWAP(symbol).catch(() => null);
     if (vwapData) {
-      const { vwap, stdDev } = vwapData;
-      const lowerBand = vwap - stdDev * config.dcaVwapSdMultiplier;
-      const upperBand = vwap + stdDev * config.dcaVwapSdMultiplier;
+      const { vwap, sd } = vwapData;
+      const lowerBand = vwap - sd * config.dcaVwapSdMultiplier;
+      const upperBand = vwap + sd * config.dcaVwapSdMultiplier;
 
       const priceImproved = existingPos.side === 'Buy'
         ? price <= lowerBand   // for longs, price must be at or below lower band
