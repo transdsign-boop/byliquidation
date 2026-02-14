@@ -239,13 +239,12 @@ async function main() {
   app.post('/api/reset', (req, res) => {
     resetPnl();
     resetTradeLog();
-    // Also clear persisted files immediately
-    import('./core/persistence.js').then(({ saveJSON }) => {
-      saveJSON('total_pnl.json', 0);
-      saveJSON('pnl_history.json', []);
-      saveJSON('trade_log.json', []);
-    });
-    console.log('[API] All PnL and trade log data reset.');
+    // Clear persisted files synchronously (saveJSON is already imported)
+    saveJSON('total_pnl.json', 0);
+    saveJSON('pnl_history.json', []);
+    saveJSON('trade_log.json', []);
+    saveJSON('position_state.json', {});
+    console.log('[API] All PnL, trade log, and position state reset.');
     res.json({ ok: true });
   });
 
