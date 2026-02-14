@@ -27,8 +27,8 @@ import { getVWAP } from './vwap.js';
  */
 
 // DCA split ratios: 4 entries totaling 100% of position budget
-// More aggressive: 50% upfront, then scale down
-const DCA_SPLITS = [0.50, 0.20, 0.15, 0.15];
+// Pyramid up: start small, add more as price extends
+const DCA_SPLITS = [0.10, 0.20, 0.30, 0.40];
 
 // Track which symbols we've already set leverage for
 const leverageSet = new Set();
