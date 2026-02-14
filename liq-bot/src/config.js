@@ -40,7 +40,7 @@ export const config = {
   leverage: parseInt(process.env.LEVERAGE || '5'),
 
   // Funded trader rules
-  minPositionPct: parseFloat(process.env.MIN_POSITION_PCT || '7'),   // Total DCA budget = 7% of balance
+  minPositionPct: parseFloat(process.env.MIN_POSITION_PCT || '10'),  // Total DCA budget = 10% of balance
   minTpPct: parseFloat(process.env.MIN_TP_PCT || '1'),               // Min profit = 1% of trade value
 
   // ATR-based TP/Trailing params

@@ -26,8 +26,9 @@ import { getVWAP } from './vwap.js';
  * - Uses Bybit TP/SL (not conditional triggers)
  */
 
-// DCA split ratios: 3 entries totaling 100% of position budget
-const DCA_SPLITS = [0.10, 0.20, 0.30, 0.40];
+// DCA split ratios: 4 entries totaling 100% of position budget
+// More aggressive: 50% upfront, then scale down
+const DCA_SPLITS = [0.50, 0.20, 0.15, 0.15];
 
 // Track which symbols we've already set leverage for
 const leverageSet = new Set();
