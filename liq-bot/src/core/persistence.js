@@ -46,11 +46,12 @@ export function loadJSON(name, fallback = null) {
  */
 let saveInterval = null;
 
-export function startPersistence({ getTradeLog, getPnlHistory, getTotalPnl, getPositionState }) {
+export function startPersistence({ getTradeLog, getPnlHistory, getTotalPnl, getPositionState, getResetTimestamp }) {
   // Load existing data on startup
   const savedPnl = loadJSON('pnl_history.json');
   const savedTrades = loadJSON('trade_log.json');
   const savedTotalPnl = loadJSON('total_pnl.json');
+  const savedResetTimestamp = loadJSON('reset_timestamp.json');
 
   console.log(`[PERSIST] Data dir: ${DATA_DIR}`);
   if (savedPnl) console.log(`[PERSIST] Loaded ${savedPnl.length} PnL records from disk.`);
@@ -62,11 +63,13 @@ export function startPersistence({ getTradeLog, getPnlHistory, getTotalPnl, getP
     saveJSON('pnl_history.json', getPnlHistory());
     saveJSON('total_pnl.json', getTotalPnl());
     if (getPositionState) saveJSON('position_state.json', getPositionState());
+    if (getResetTimestamp) saveJSON('reset_timestamp.json', getResetTimestamp());
   }, 10000);
 
   return {
     pnlHistory: savedPnl || [],
     tradeLog: savedTrades || [],
     totalPnl: savedTotalPnl || 0,
+    resetTimestamp: savedResetTimestamp || 0,
   };
 }

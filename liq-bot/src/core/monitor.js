@@ -7,15 +7,17 @@ import { getATR } from './atr.js';
 const recentlyClosedSymbols = new Map(); // symbol -> timestamp
 
 /**
- * Fetch all close data directly from Bybit APIs — no calculated values.
- * Matches the correct closed PnL record by entry price + qty to avoid
- * picking up the wrong record when multiple trades happen on the same symbol.
+ * Fetch close data from Bybit APIs and calculate PnL from tracked entry + matched exit.
+ * Instead of trusting Bybit's closedPnl value (which may be from a mismatched record),
+ * we calculate grossPnl ourselves: (exit - entry) × qty, then subtract fees.
  *
- * Retries up to 3 times with 1s delay if no matching record found (API settle time).
+ * Matching filters: only records created after position was opened + price/qty match.
+ * Retries up to 5 times with 2s delay if no matching record found (API settle time).
  */
-async function fetchBybitCloseData(symbol, entryOrderId, trackedEntryPrice = 0, trackedQty = 0) {
+async function fetchBybitCloseData(symbol, entryOrderId, trackedEntryPrice = 0, trackedQty = 0, trackedSide = null, openTime = 0) {
   const data = {
     pnl: 0,
+    grossPnl: 0,
     fees: { open: 0, close: 0, total: 0 },
     entryIsMaker: false,
     exitIsMaker: false,
@@ -24,63 +26,94 @@ async function fetchBybitCloseData(symbol, entryOrderId, trackedEntryPrice = 0, 
     closeOrderId: null,
   };
 
-  // 1. Closed PnL — fetch multiple records and match by entry price + qty
+  // 1. Closed PnL — multi-tier matching strategy with extended retries
   let closeOrderId = null;
-  const maxRetries = 5;
+  const maxRetries = 6;
+  const retryDelayMs = 3000;
 
   for (let attempt = 0; attempt < maxRetries; attempt++) {
     if (attempt > 0) {
-      await new Promise(r => setTimeout(r, 2000));
+      await new Promise(r => setTimeout(r, retryDelayMs));
       console.log(`[MONITOR] ${symbol} retry ${attempt + 1}/${maxRetries} for closed PnL match...`);
     }
 
     try {
-      const pnlRes = await getClosedPnl(symbol, 10);
+      const pnlRes = await getClosedPnl(symbol, 50);
       if (pnlRes.retCode !== 0 || !pnlRes.result?.list?.length) continue;
 
-      // Find the record matching our tracked position
-      let bestMatch = null;
+      // On early attempts: filter by openTime. On last 2 attempts: drop the time filter
+      const relaxTimeFilter = attempt >= maxRetries - 2;
 
-      for (const rec of pnlRes.result.list) {
+      const candidates = pnlRes.result.list.filter(rec => {
+        if (usedCloseOrderIds.has(rec.orderId)) return false;
+        if (!relaxTimeFilter && openTime > 0 && parseInt(rec.createdTime || '0') < openTime) return false;
+        return true;
+      });
+
+      if (candidates.length === 0) continue;
+
+      let bestMatch = null;
+      let matchTier = 0;
+
+      // Tier 1: Strict match (price 0.5% + qty 1%)
+      for (const rec of candidates) {
         const recEntry = parseFloat(rec.avgEntryPrice || '0');
         const recQty = parseFloat(rec.qty || '0');
-        const recId = rec.orderId;
-
-        // Skip records we've already recorded (by closeOrderId)
-        if (usedCloseOrderIds.has(recId)) continue;
-
-        // Match by entry price (within 0.5%) and qty (within 1%)
         if (trackedEntryPrice > 0 && recEntry > 0) {
           const priceDiff = Math.abs(recEntry - trackedEntryPrice) / trackedEntryPrice;
           const qtyDiff = trackedQty > 0 && recQty > 0 ? Math.abs(recQty - trackedQty) / trackedQty : 0;
-
           if (priceDiff < 0.005 && qtyDiff < 0.01) {
             bestMatch = rec;
-            break; // exact match found
-          }
-        }
-      }
-
-      // Fallback: if no match by price/qty, use the most recent unused record
-      if (!bestMatch) {
-        for (const rec of pnlRes.result.list) {
-          if (!usedCloseOrderIds.has(rec.orderId)) {
-            bestMatch = rec;
+            matchTier = 1;
             break;
           }
         }
       }
 
+      // Tier 2: Relaxed match (price 5% + qty 20%) — wider for DCA
+      if (!bestMatch) {
+        for (const rec of candidates) {
+          const recEntry = parseFloat(rec.avgEntryPrice || '0');
+          const recQty = parseFloat(rec.qty || '0');
+          if (trackedEntryPrice > 0 && recEntry > 0) {
+            const priceDiff = Math.abs(recEntry - trackedEntryPrice) / trackedEntryPrice;
+            const qtyDiff = trackedQty > 0 && recQty > 0 ? Math.abs(recQty - trackedQty) / trackedQty : 1;
+            if (priceDiff < 0.05 && qtyDiff < 0.2) {
+              bestMatch = rec;
+              matchTier = 2;
+              break;
+            }
+          }
+        }
+      }
+
+      // Tier 3: Side match — any candidate with matching side direction
+      if (!bestMatch && trackedSide) {
+        for (const rec of candidates) {
+          if (rec.side === trackedSide) {
+            bestMatch = rec;
+            matchTier = 3;
+            break;
+          }
+        }
+      }
+
+      // Tier 4: Any candidate — take most recent (Bybit returns newest first)
+      if (!bestMatch) {
+        bestMatch = candidates[0];
+        matchTier = 4;
+      }
+
       if (bestMatch) {
-        data.pnl = parseFloat(bestMatch.closedPnl || '0');
         data.avgEntryPrice = parseFloat(bestMatch.avgEntryPrice || '0');
         data.avgExitPrice = parseFloat(bestMatch.avgExitPrice || '0');
+        data.bybitClosedPnl = parseFloat(bestMatch.closedPnl || '0');
         closeOrderId = bestMatch.orderId;
         data.closeOrderId = closeOrderId;
         usedCloseOrderIds.add(closeOrderId);
 
-        console.log(`[MONITOR] ${symbol} matched closed PnL | Entry: ${data.avgEntryPrice} | Exit: ${data.avgExitPrice} | PnL: ${data.pnl} | CloseOrderId: ${closeOrderId}`);
-        break; // success
+        console.log(`[MONITOR] ${symbol} matched (tier ${matchTier}${attempt >= maxRetries - 2 ? ', relaxed time' : ''}) | Entry: ${data.avgEntryPrice} | Exit: ${data.avgExitPrice} | BybitPnL: ${data.bybitClosedPnl} | CloseOrderId: ${closeOrderId}`);
+        break;
       }
     } catch (err) {
       console.warn(`[MONITOR] Could not fetch closed PnL for ${symbol}:`, err.message);
@@ -88,7 +121,7 @@ async function fetchBybitCloseData(symbol, entryOrderId, trackedEntryPrice = 0, 
   }
 
   if (!closeOrderId) {
-    console.warn(`[MONITOR] ${symbol} no matching closed PnL record found after ${maxRetries} attempts`);
+    console.warn(`[MONITOR] ${symbol} no matching closed PnL record found after ${maxRetries} retries`);
   }
 
   // 2. Entry executions — exact fee + isMaker from Bybit execution records
@@ -125,7 +158,34 @@ async function fetchBybitCloseData(symbol, entryOrderId, trackedEntryPrice = 0, 
 
   data.fees.total = data.fees.open + data.fees.close;
 
-  console.log(`[MONITOR] ${symbol} final | PnL: ${data.pnl.toFixed(4)} | Open fee: ${data.fees.open.toFixed(6)} (${data.entryIsMaker ? 'MAKER' : 'TAKER'}) | Close fee: ${data.fees.close.toFixed(6)} (${data.exitIsMaker ? 'MAKER' : 'TAKER'}) | Entry: ${data.avgEntryPrice} | Exit: ${data.avgExitPrice}`);
+  // PnL: ALWAYS use Bybit's closedPnl (source of truth), calculate our own only as fallback
+  const entryPrice = trackedEntryPrice || data.avgEntryPrice;
+  const exitPrice = data.avgExitPrice;
+
+  if (data.bybitClosedPnl != null && data.bybitClosedPnl !== 0) {
+    // Bybit's closedPnl is authoritative (already net of fees for that specific position)
+    data.pnl = data.bybitClosedPnl;
+    data.grossPnl = data.pnl + data.fees.total;
+    // Log if our calculation would have differed significantly
+    if (entryPrice > 0 && exitPrice > 0 && trackedQty > 0 && trackedSide) {
+      const calcGross = trackedSide === 'Buy'
+        ? (exitPrice - entryPrice) * trackedQty
+        : (entryPrice - exitPrice) * trackedQty;
+      const calcPnl = calcGross - data.fees.total;
+      if (Math.abs(calcPnl - data.pnl) > 0.5) {
+        console.warn(`[MONITOR] ${symbol} PnL mismatch: Bybit=${data.pnl.toFixed(4)} vs calc=${calcPnl.toFixed(4)} (using Bybit)`);
+      }
+    }
+  } else if (entryPrice > 0 && exitPrice > 0 && trackedQty > 0 && trackedSide) {
+    // Fallback: calculate from prices (only when Bybit closedPnl unavailable)
+    data.grossPnl = trackedSide === 'Buy'
+      ? (exitPrice - entryPrice) * trackedQty
+      : (entryPrice - exitPrice) * trackedQty;
+    data.pnl = data.grossPnl - data.fees.total;
+    console.log(`[MONITOR] ${symbol} using calculated PnL (no Bybit closedPnl): ${data.pnl.toFixed(4)}`);
+  }
+
+  console.log(`[MONITOR] ${symbol} final | PnL: ${data.pnl.toFixed(4)} (Bybit: ${data.bybitClosedPnl ?? 'n/a'}) | Fees: ${data.fees.total.toFixed(6)} | Entry: ${entryPrice} | Exit: ${exitPrice}`);
 
   return data;
 }
@@ -249,8 +309,9 @@ async function ensureProtectionOnPosition(symbol, side, entryPrice, qty) {
 
 let pnlHistory = []; // { symbol, pnl, closedAt, ... }
 let totalPnl = 0;
+let resetTimestamp = 0; // When PnL was last reset — reconcilePnl ignores trades before this
 
-export function hydratePnl(savedHistory, savedTotal) {
+export function hydratePnl(savedHistory, savedTotal, savedResetTimestamp) {
   if (savedHistory && savedHistory.length) {
     pnlHistory = savedHistory;
     // Seed usedCloseOrderIds so we don't re-match old records
@@ -263,6 +324,10 @@ export function hydratePnl(savedHistory, savedTotal) {
     totalPnl = savedTotal;
     console.log(`[MONITOR] Restored total PnL: ${totalPnl.toFixed(4)}`);
   }
+  if (typeof savedResetTimestamp === 'number' && savedResetTimestamp > 0) {
+    resetTimestamp = savedResetTimestamp;
+    console.log(`[MONITOR] Restored reset timestamp: ${resetTimestamp} — ignoring trades before this.`);
+  }
 }
 
 
@@ -271,13 +336,19 @@ export function getPnlHistory() {
 }
 
 export function getTotalPnl() {
-  return totalPnl;
+  return pnlHistory.reduce((s, p) => s + p.pnl, 0);
 }
 
 export function resetPnl() {
   pnlHistory = [];
   totalPnl = 0;
-  console.log('[MONITOR] PnL data reset to zero.');
+  usedCloseOrderIds.clear();
+  resetTimestamp = Date.now();
+  console.log(`[MONITOR] PnL data reset to zero. Ignoring trades before ${resetTimestamp}.`);
+}
+
+export function getResetTimestamp() {
+  return resetTimestamp;
 }
 
 export function resetMonitorState() {
@@ -291,8 +362,12 @@ export function resetMonitorState() {
 export function getStats() {
   const tradeLog = getTradeLog();
   const filled = tradeLog.filter(t => t.status === 'FILLED');
-  const wins = pnlHistory.filter(p => p.pnl > 0);
-  const losses = pnlHistory.filter(p => p.pnl <= 0);
+
+  // Exclude unresolved records (pnl=0 with no exit price) from win/loss stats
+  const resolved = pnlHistory.filter(p => p.pnl !== 0 || p.exitPrice);
+  const unresolved = pnlHistory.length - resolved.length;
+  const wins = resolved.filter(p => p.pnl > 0);
+  const losses = resolved.filter(p => p.pnl < 0);
   const avgExecTime = filled.length > 0
     ? filled.reduce((s, t) => s + t.execTimeMs, 0) / filled.length
     : 0;
@@ -306,8 +381,9 @@ export function getStats() {
     closedTrades: pnlHistory.length,
     wins: wins.length,
     losses: losses.length,
-    winRate: pnlHistory.length > 0 ? (wins.length / pnlHistory.length * 100).toFixed(1) : '0',
-    totalPnl: totalPnl.toFixed(4),
+    unresolved,
+    winRate: resolved.length > 0 ? (wins.length / resolved.length * 100).toFixed(1) : '0',
+    totalPnl: pnlHistory.reduce((s, p) => s + p.pnl, 0).toFixed(4),
     totalGrossPnl: totalGrossPnl.toFixed(4),
     totalFees: totalFees.toFixed(4),
     avgExecTimeMs: avgExecTime.toFixed(0),
@@ -386,30 +462,24 @@ export async function syncPositions() {
       }
     }
 
-    // Check each tracked position
+    // Check each tracked position — collect closures, update open positions
+    const closedEntries = [];
+
     for (const [symbol, tracked] of activePositions) {
       const bybitPos = bybitPositions.get(symbol);
 
       if (!bybitPos) {
         // Grace period: skip if position was opened less than 15s ago
-        // (API may not reflect it yet due to race condition with syncPositions)
         const ageMs = Date.now() - (tracked.openTime || 0);
-        if (ageMs < 15000) {
-          continue;
-        }
+        if (ageMs < 15000) continue;
 
-        // Guard: prevent duplicate close records (e.g. sync runs twice before deletion)
+        // Guard: prevent duplicate close records
         if (recentlyClosedSymbols.has(symbol) && Date.now() - recentlyClosedSymbols.get(symbol) < 10000) {
           activePositions.delete(symbol);
           continue;
         }
         recentlyClosedSymbols.set(symbol, Date.now());
-
-        // Position gone — fetch all close data from Bybit APIs
-        // Wait 2s for Bybit to settle the closed PnL record
-        await new Promise(r => setTimeout(r, 2000));
-        const closeData = await fetchBybitCloseData(symbol, tracked.orderId, tracked.entryPrice, tracked.qty);
-        recordClose(symbol, tracked, closeData, 'TP/SL/TRAIL');
+        closedEntries.push({ symbol, tracked });
         continue;
       }
 
@@ -477,7 +547,15 @@ export async function syncPositions() {
           }).catch(err => console.error(`[MONITOR] Trailing stop restore error for ${symbol}:`, err.message));
         }
       }
+    }
 
+    // Process closures in parallel — don't block sync loop sequentially
+    if (closedEntries.length > 0) {
+      await new Promise(r => setTimeout(r, 2000)); // Single shared wait for Bybit to settle
+      await Promise.all(closedEntries.map(async ({ symbol, tracked }) => {
+        const closeData = await fetchBybitCloseData(symbol, tracked.orderId, tracked.entryPrice, tracked.qty, tracked.side, tracked.openTime);
+        recordClose(symbol, tracked, closeData, 'TP/SL/TRAIL');
+      }));
     }
   } catch (err) {
     console.error('[MONITOR] Sync error:', err.message);
@@ -487,22 +565,17 @@ export async function syncPositions() {
 function recordClose(symbol, tracked, closeData, exitType) {
   const activePositions = getActivePositions();
 
-  // Bybit closedPnl is NET (after fees). Compute gross for display.
-  const grossPnl = closeData.pnl + closeData.fees.total;
-
   pnlHistory.unshift({
     symbol,
     orderId: tracked.orderId || null,
     closeOrderId: closeData.closeOrderId || null,
     side: tracked.side,
-    // Bybit actual entry/exit prices
-    entryPrice: closeData.avgEntryPrice || tracked.entryPrice,
+    entryPrice: tracked.entryPrice,
     exitPrice: closeData.avgExitPrice || 0,
     tpPrice: tracked.tpPrice,
     slPrice: tracked.slPrice,
     qty: tracked.qty,
-    // All from Bybit API — no calculated values
-    grossPnl,
+    grossPnl: closeData.grossPnl,
     pnl: closeData.pnl,
     fees: closeData.fees,
     exitType,
@@ -534,7 +607,7 @@ function recordClose(symbol, tracked, closeData, exitType) {
  */
 export async function reconcilePnl() {
   try {
-    const pnlRes = await getClosedPnl(null, 50);
+    const pnlRes = await getClosedPnl(null, 200);
     if (pnlRes.retCode !== 0 || !pnlRes.result?.list?.length) {
       console.log('[RECONCILE] No closed PnL records from Bybit or API error.');
       return;
@@ -542,11 +615,13 @@ export async function reconcilePnl() {
 
     const bybitRecords = pnlRes.result.list;
 
-    // Build time-based fallback lookup for records without closeOrderId
+    // Build time-based fallback lookup for records without closeOrderId (120s buckets ± 1)
+    // IMPORTANT: Skip pnl:0 broken records — they need to be reconciled, not used as dedup keys
     const knownByTimeSymbol = new Set();
     for (const rec of pnlHistory) {
+      if (rec.pnl === 0 && !rec.exitPrice) continue;
       if (rec.closedAt && rec.symbol) {
-        const bucket = Math.floor(rec.closedAt / 30000); // 30s buckets
+        const bucket = Math.floor(rec.closedAt / 120000); // 120s buckets
         knownByTimeSymbol.add(`${rec.symbol}_${bucket}`);
         knownByTimeSymbol.add(`${rec.symbol}_${bucket - 1}`);
         knownByTimeSymbol.add(`${rec.symbol}_${bucket + 1}`);
@@ -558,14 +633,16 @@ export async function reconcilePnl() {
       const closeOrderId = rec.orderId;
       const symbol = rec.symbol;
       const createdTime = parseInt(rec.createdTime || '0');
-      const bucket = Math.floor(createdTime / 30000);
+      const bucket = Math.floor(createdTime / 120000);
+
+      // Skip trades that closed before the last PnL reset
+      if (resetTimestamp > 0 && createdTime < resetTimestamp) continue;
 
       // Skip if we already have this trade (by closeOrderId or time proximity)
       if (usedCloseOrderIds.has(closeOrderId)) continue;
       if (knownByTimeSymbol.has(`${symbol}_${bucket}`)) continue;
 
-      // Missing trade — backfill from Bybit data
-      const netPnl = parseFloat(rec.closedPnl || '0');
+      // Missing trade — backfill from Bybit data, calculate PnL ourselves
       const avgEntryPrice = parseFloat(rec.avgEntryPrice || '0');
       const avgExitPrice = parseFloat(rec.avgExitPrice || '0');
       const qty = parseFloat(rec.qty || '0');
@@ -588,39 +665,65 @@ export async function reconcilePnl() {
       } catch {}
 
       fees.total = fees.open + fees.close;
+
+      // Use Bybit's closedPnl directly (source of truth, already net of fees)
+      const bybitPnl = parseFloat(rec.closedPnl || '0');
+      const netPnl = bybitPnl;
       const grossPnl = netPnl + fees.total;
 
-      pnlHistory.push({
-        symbol,
-        orderId: null,
-        closeOrderId,
-        side,
-        entryPrice: avgEntryPrice,
-        exitPrice: avgExitPrice,
-        tpPrice: null,
-        slPrice: null,
-        qty,
-        grossPnl,
-        pnl: netPnl,
-        fees,
-        exitType: 'RECONCILED',
-        atr: null,
-        trailingStop: null,
-        tpMethod: null,
-        openTime: createdTime,
-        closedAt: createdTime,
-        holdTimeMs: 0,
-        liqUsdValue: 0,
-        execTimeMs: 0,
-        entryIsMaker,
-        exitIsMaker,
-      });
+      // Check if there's an existing record with pnl: 0 for the same trade
+      // (happens when fetchBybitCloseData couldn't find a match)
+      // Use !p.exitPrice to catch both 0 and undefined/missing field
+      // Wider tolerances (5% price, 30% qty) for DCA trades where avg price shifts
+      const existingIdx = pnlHistory.findIndex(p =>
+        p.symbol === symbol &&
+        p.pnl === 0 &&
+        !p.exitPrice &&
+        ((avgEntryPrice > 0 && p.entryPrice > 0 && Math.abs(p.entryPrice - avgEntryPrice) / avgEntryPrice < 0.05) ||
+         (qty > 0 && p.qty > 0 && Math.abs(p.qty - qty) / qty < 0.3))
+      );
 
-      totalPnl += netPnl;
+      if (existingIdx >= 0) {
+        // Update the existing broken record instead of creating a duplicate
+        const existing = pnlHistory[existingIdx];
+        existing.exitPrice = avgExitPrice;
+        existing.grossPnl = grossPnl;
+        existing.pnl = netPnl;
+        existing.closeOrderId = closeOrderId;
+        existing.fees = { open: existing.fees?.open || 0, close: fees.close, total: (existing.fees?.open || 0) + fees.close };
+        existing.exitIsMaker = exitIsMaker;
+        console.log(`[RECONCILE] Updated existing pnl:0 record for ${symbol} | Gross: ${grossPnl.toFixed(4)} | Net: ${netPnl.toFixed(4)} | Entry: ${avgEntryPrice} | Exit: ${avgExitPrice}`);
+      } else {
+        pnlHistory.push({
+          symbol,
+          orderId: null,
+          closeOrderId,
+          side,
+          entryPrice: avgEntryPrice,
+          exitPrice: avgExitPrice,
+          tpPrice: null,
+          slPrice: null,
+          qty,
+          grossPnl,
+          pnl: netPnl,
+          fees,
+          exitType: 'RECONCILED',
+          atr: null,
+          trailingStop: null,
+          tpMethod: null,
+          openTime: createdTime,
+          closedAt: createdTime,
+          holdTimeMs: 0,
+          liqUsdValue: 0,
+          execTimeMs: 0,
+          entryIsMaker,
+          exitIsMaker,
+        });
+        console.log(`[RECONCILE] Backfilled ${symbol} | Gross: ${grossPnl.toFixed(4)} | Net: ${netPnl.toFixed(4)} | Entry: ${avgEntryPrice} | Exit: ${avgExitPrice} | CloseOrderId: ${closeOrderId}`);
+      }
+
       usedCloseOrderIds.add(closeOrderId);
       backfilled++;
-
-      console.log(`[RECONCILE] Backfilled ${symbol} | Net PnL: ${netPnl.toFixed(4)} | Close: ${avgExitPrice} | CloseOrderId: ${closeOrderId}`);
     }
 
     if (backfilled > 0) {
@@ -639,4 +742,9 @@ export async function reconcilePnl() {
 export function startMonitor() {
   console.log(`[MONITOR] Starting position monitor (2s interval)...`);
   setInterval(syncPositions, 2000);
+
+  // Periodic reconciliation every 2 minutes to catch any missed PnL
+  setInterval(() => {
+    reconcilePnl().catch(err => console.error('[MONITOR] Periodic reconciliation error:', err.message));
+  }, 2 * 60 * 1000);
 }

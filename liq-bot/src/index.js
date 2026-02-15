@@ -4,7 +4,7 @@ import { fileURLToPath } from 'url';
 import { config } from './config.js';
 import { LiquidationScanner } from './core/scanner.js';
 import { executeTrade, getTradeLog, resetTradeLog, getActivePositions, setInitialBalance, loadExistingPositions, hydrateTradeLog, getPositionState, hydratePositionState } from './core/executor.js';
-import { startMonitor, getStats, getPnlHistory, getTotalPnl, hydratePnl, resetPnl, reconcilePnl } from './core/monitor.js';
+import { startMonitor, getStats, getPnlHistory, getTotalPnl, hydratePnl, resetPnl, reconcilePnl, getResetTimestamp } from './core/monitor.js';
 import { startPersistence, saveJSON, loadJSON } from './core/persistence.js';
 import { instrumentCache } from './core/instruments.js';
 import { loadVolumes, isLowVolume } from './core/volume-filter.js';
@@ -31,9 +31,9 @@ async function main() {
   console.log('===========================================');
 
   // 0. Restore persisted data from disk
-  const saved = startPersistence({ getTradeLog, getPnlHistory, getTotalPnl, getPositionState });
+  const saved = startPersistence({ getTradeLog, getPnlHistory, getTotalPnl, getPositionState, getResetTimestamp });
   hydrateTradeLog(saved.tradeLog);
-  hydratePnl(saved.pnlHistory, saved.totalPnl);
+  hydratePnl(saved.pnlHistory, saved.totalPnl, saved.resetTimestamp);
 
   // 0b. Restore runtime config overrides from disk
   const savedConfig = loadJSON('config_overrides.json');
@@ -239,11 +239,12 @@ async function main() {
   app.post('/api/reset', (req, res) => {
     resetPnl();
     resetTradeLog();
-    // Clear persisted files synchronously (saveJSON is already imported)
+    // Clear persisted files and save reset timestamp so reconcilePnl ignores old trades
     saveJSON('total_pnl.json', 0);
     saveJSON('pnl_history.json', []);
     saveJSON('trade_log.json', []);
     saveJSON('position_state.json', {});
+    saveJSON('reset_timestamp.json', getResetTimestamp());
     console.log('[API] All PnL, trade log, and position state reset.');
     res.json({ ok: true });
   });
