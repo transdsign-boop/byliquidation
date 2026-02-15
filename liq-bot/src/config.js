@@ -43,11 +43,12 @@ export const config = {
   minPositionPct: parseFloat(process.env.MIN_POSITION_PCT || '50'),  // Total DCA budget = 50% of balance (first entry = 5%)
   minTpPct: parseFloat(process.env.MIN_TP_PCT || '1'),               // Min profit = 1% of trade value
 
-  // ATR-based TP/Trailing params
+  // ATR-based TP/SL/Trailing params
   atrPeriod: parseInt(process.env.ATR_PERIOD || '14'),
   atrInterval: process.env.ATR_INTERVAL || '1',
   tpAtrMultiplier: parseFloat(process.env.TP_ATR_MULTIPLIER || '1.5'),
-  trailingAtrMultiplier: parseFloat(process.env.TRAILING_ATR_MULTIPLIER || '0.5'),
+  slAtrMultiplier: parseFloat(process.env.SL_ATR_MULTIPLIER || '3'),
+  trailingAtrMultiplier: parseFloat(process.env.TRAILING_ATR_MULTIPLIER || '1.5'),
   dcaVwapSdMultiplier: parseFloat(process.env.DCA_VWAP_SD || '2'),
 
   // Order types: 'Market' or 'Limit' (Limit uses PostOnly for maker fees)

@@ -197,34 +197,44 @@ import { getActivePositions, getTradeLog, getPendingSymbols, getInitialBalance }
 
 /**
  * Calculate and set SL + Trailing Stop for a naked position.
- * Uses the same 2% account risk rule as the executor.
+ * Uses ATR-based SL (proportional to trailing stop) with risk-budget fallback.
  * Returns { slPrice, trailingStop, trailActivePrice } or null on failure.
  */
 async function ensureProtectionOnPosition(symbol, side, entryPrice, qty) {
-  const balance = getInitialBalance();
-  if (balance <= 0) {
-    console.warn(`[MONITOR] Cannot set protection for ${symbol} — no account balance loaded`);
-    return null;
-  }
-
   const inst = instrumentCache.get(symbol);
   if (!inst) {
     console.warn(`[MONITOR] Cannot set protection for ${symbol} — unknown instrument`);
     return null;
   }
 
-  // Calculate SL: shared risk budget = totalRiskPct% of balance / number of positions
-  const activePositions = getActivePositions();
-  const positionCount = Math.max(1, activePositions.size);
-  const maxLossUsd = (balance * (config.totalRiskPct / 100)) / positionCount;
-  let slOffset = maxLossUsd / qty;
+  // Fetch ATR for both SL and trailing stop
+  let atrValue = null;
+  try {
+    atrValue = await getATR(symbol);
+  } catch (err) {
+    console.warn(`[MONITOR] ATR fetch failed for ${symbol}:`, err.message);
+  }
 
-  // Ensure SL offset is at least 1 tick
+  // Calculate SL: ATR-based (proportional to trailing), risk-budget fallback
+  let slOffset;
+  if (atrValue && atrValue > 0) {
+    slOffset = atrValue * config.slAtrMultiplier;
+  } else {
+    // Fallback: risk-budget SL
+    const balance = getInitialBalance();
+    if (balance <= 0) {
+      console.warn(`[MONITOR] Cannot set protection for ${symbol} — no balance and no ATR`);
+      return null;
+    }
+    const activePositions = getActivePositions();
+    const positionCount = Math.max(1, activePositions.size);
+    const maxLossUsd = (balance * (config.totalRiskPct / 100)) / positionCount;
+    slOffset = maxLossUsd / qty;
+  }
+
   if (inst.tickSize && slOffset < inst.tickSize) {
     slOffset = inst.tickSize;
   }
-
-  // Safety clamp: SL must never exceed 90% of entry price
   const maxSlOffset = entryPrice * 0.9;
   if (slOffset > maxSlOffset) {
     console.warn(`[MONITOR] ${symbol} SL offset ${slOffset.toFixed(6)} > 90% of entry, clamping to ${maxSlOffset.toFixed(6)}`);
@@ -239,29 +249,22 @@ async function ensureProtectionOnPosition(symbol, side, entryPrice, qty) {
   let trailingStop = null;
   let trailActivePrice = null;
 
-  try {
-    const atrValue = await getATR(symbol);
-    if (atrValue && atrValue > 0) {
-      trailingStop = instrumentCache.roundPrice(symbol, atrValue * config.trailingAtrMultiplier);
+  if (atrValue && atrValue > 0) {
+    trailingStop = instrumentCache.roundPrice(symbol, atrValue * config.trailingAtrMultiplier);
 
-      // Ensure trailing stop is at least 1 tick
-      if (!trailingStop && inst.tickSize) {
-        trailingStop = inst.tickSize;
-      }
-
-      // Calculate activation price (entry + trail distance + fee buffer)
-      if (trailingStop) {
-        const feeBuffer = instrumentCache.roundPrice(symbol, entryPrice * 0.0015);
-        trailActivePrice = side === 'Buy'
-          ? instrumentCache.roundPrice(symbol, entryPrice + trailingStop + feeBuffer)
-          : instrumentCache.roundPrice(symbol, entryPrice - trailingStop - feeBuffer);
-      }
+    if (!trailingStop && inst.tickSize) {
+      trailingStop = inst.tickSize;
     }
-  } catch (err) {
-    console.warn(`[MONITOR] ATR fetch failed for ${symbol}, skipping trailing stop:`, err.message);
+
+    if (trailingStop) {
+      const feeBuffer = instrumentCache.roundPrice(symbol, entryPrice * 0.0015);
+      trailActivePrice = side === 'Buy'
+        ? instrumentCache.roundPrice(symbol, entryPrice + trailingStop + feeBuffer)
+        : instrumentCache.roundPrice(symbol, entryPrice - trailingStop - feeBuffer);
+    }
   }
 
-  console.log(`[MONITOR] Setting protection on naked position ${symbol} | Side: ${side} | Entry: ${entryPrice} | SL: ${slPrice} | Trail: ${trailingStop || '—'} | Max loss: $${maxLossUsd.toFixed(2)}`);
+  console.log(`[MONITOR] Setting protection on ${symbol} | Side: ${side} | Entry: ${entryPrice} | SL: ${slPrice} (${atrValue ? config.slAtrMultiplier + 'x ATR' : 'budget'}) | Trail: ${trailingStop || '—'}`);
 
   const result = { slPrice: null, trailingStop: null, trailActivePrice: null };
 

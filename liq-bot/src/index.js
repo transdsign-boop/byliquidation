@@ -27,6 +27,7 @@ async function main() {
   console.log(`  Total risk budget: ${config.totalRiskPct}% of balance`);
   console.log(`  ATR period: ${config.atrPeriod} (${config.atrInterval}m candles)`);
   console.log(`  TP multiplier: ${config.tpAtrMultiplier}x ATR`);
+  console.log(`  SL multiplier: ${config.slAtrMultiplier}x ATR`);
   console.log(`  Trailing stop: ${config.trailingAtrMultiplier}x ATR`);
   console.log('===========================================');
 
@@ -40,6 +41,7 @@ async function main() {
   if (savedConfig) {
     if (savedConfig.minLiqValueUsd != null) config.minLiqValueUsd = savedConfig.minLiqValueUsd;
     if (savedConfig.maxPositions != null) config.maxPositions = savedConfig.maxPositions;
+    if (savedConfig.slAtrMultiplier != null) config.slAtrMultiplier = savedConfig.slAtrMultiplier;
     if (savedConfig.trailingAtrMultiplier != null) config.trailingAtrMultiplier = savedConfig.trailingAtrMultiplier;
     if (savedConfig.atrInterval != null) config.atrInterval = String(savedConfig.atrInterval);
     if (savedConfig.entryOrderType != null) config.entryOrderType = savedConfig.entryOrderType;
@@ -160,6 +162,7 @@ async function main() {
       atrPeriod: config.atrPeriod,
       atrInterval: config.atrInterval,
       tpAtrMultiplier: config.tpAtrMultiplier,
+      slAtrMultiplier: config.slAtrMultiplier,
       trailingAtrMultiplier: config.trailingAtrMultiplier,
       maxPositions: config.maxPositions,
       entryOrderType: config.entryOrderType,
@@ -174,7 +177,7 @@ async function main() {
   app.post('/api/config', (req, res) => {
     const updates = {};
 
-    const { minLiqValueUsd, maxPositions, trailingAtrMultiplier, atrInterval, entryOrderType, tpOrderType, minTurnover24h } = req.body;
+    const { minLiqValueUsd, maxPositions, slAtrMultiplier, trailingAtrMultiplier, atrInterval, entryOrderType, tpOrderType, minTurnover24h } = req.body;
 
     if (minLiqValueUsd != null && typeof minLiqValueUsd === 'number' && minLiqValueUsd >= 0) {
       const old = config.minLiqValueUsd;
@@ -188,6 +191,13 @@ async function main() {
       config.maxPositions = maxPositions;
       console.log(`[CONFIG] Max positions changed: ${old} → ${maxPositions}`);
       updates.maxPositions = maxPositions;
+    }
+
+    if (slAtrMultiplier != null && typeof slAtrMultiplier === 'number' && slAtrMultiplier > 0) {
+      const old = config.slAtrMultiplier;
+      config.slAtrMultiplier = slAtrMultiplier;
+      console.log(`[CONFIG] SL ATR multiplier changed: ${old} → ${slAtrMultiplier}`);
+      updates.slAtrMultiplier = slAtrMultiplier;
     }
 
     if (trailingAtrMultiplier != null && typeof trailingAtrMultiplier === 'number' && trailingAtrMultiplier > 0) {

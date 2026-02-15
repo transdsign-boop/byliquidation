@@ -111,19 +111,22 @@ function getMaxLossPerPosition(positionCount) {
 }
 
 async function tightenAllSLs(positionCount) {
-  const maxLossUsd = getMaxLossPerPosition(positionCount);
-
   for (const [symbol, pos] of activePositions) {
     const inst = instrumentCache.get(symbol);
     if (!inst) continue;
 
-    // Use totalExpectedQty (full budget qty) for consistent SL distance,
-    // matching how initial entry SL is calculated. This way tightenAllSLs
-    // actually tightens partially-filled positions instead of being a no-op.
-    const expectedQty = pos.totalBudget > 0
-      ? instrumentCache.roundQty(symbol, pos.totalBudget / pos.entryPrice)
-      : pos.qty;
-    let slOffset = maxLossUsd / expectedQty;
+    // ATR-based SL (consistent with entry SL calculation)
+    let slOffset;
+    if (pos.atr && pos.atr > 0) {
+      slOffset = pos.atr * config.slAtrMultiplier;
+    } else {
+      // Fallback: risk-budget SL
+      const maxLossUsd = getMaxLossPerPosition(positionCount);
+      const expectedQty = pos.totalBudget > 0
+        ? instrumentCache.roundQty(symbol, pos.totalBudget / pos.entryPrice)
+        : pos.qty;
+      slOffset = maxLossUsd / expectedQty;
+    }
     if (inst.tickSize && slOffset < inst.tickSize) slOffset = inst.tickSize;
     const maxSlOffset = pos.entryPrice * 0.9;
     if (slOffset > maxSlOffset) slOffset = maxSlOffset;
@@ -418,17 +421,24 @@ export async function executeTrade(liqEvent) {
       console.log(`[EXECUTOR] TP widened for ${symbol}: ${oldTp} → ${tpPrice} (min ${config.minTpPct}% of $${notional.toFixed(0)} = $${minProfitUsd.toFixed(2)} profit)`);
     }
 
-    // Stop-loss: shared risk budget divided by number of positions
-    // Use total budget qty (not just DCA entry qty) so SL distance is reasonable.
-    const positionCount = activePositions.size + 1; // +1 for this new position
+    // Stop-loss: ATR-based (proportional to trailing stop for balanced risk/reward)
+    // Fallback to risk-budget if ATR unavailable
+    const positionCount = activePositions.size + 1;
     const maxLossUsd = getMaxLossPerPosition(positionCount);
-    const totalExpectedQty = instrumentCache.roundQty(symbol, totalBudget / price);
-    let slOffset = maxLossUsd / totalExpectedQty;
+    let slOffset;
+    if (atrValue && atrValue > 0) {
+      slOffset = atrValue * config.slAtrMultiplier;
+      console.log(`[EXECUTOR] ${symbol} ATR-based SL: ${config.slAtrMultiplier}x ATR (${atrValue.toFixed(6)}) = ${slOffset.toFixed(6)}`);
+    } else {
+      // Fallback: risk-budget SL
+      const totalExpectedQty = instrumentCache.roundQty(symbol, totalBudget / price);
+      slOffset = maxLossUsd / totalExpectedQty;
+      console.log(`[EXECUTOR] ${symbol} risk-budget SL fallback: ${slOffset.toFixed(6)}`);
+    }
     if (inst.tickSize && slOffset < inst.tickSize) {
       slOffset = inst.tickSize;
       console.warn(`[EXECUTOR] ${symbol} SL offset below tick size, using 1 tick: ${inst.tickSize}`);
     }
-    // Safety clamp: SL must never exceed 90% of entry price (avoids negative SL for buys / absurd SL for shorts)
     const maxSlOffset = price * 0.9;
     if (slOffset > maxSlOffset) {
       console.warn(`[EXECUTOR] ${symbol} SL offset ${slOffset.toFixed(6)} > 90% of price ${price}, clamping to ${maxSlOffset.toFixed(6)}`);
@@ -855,15 +865,19 @@ async function executeDCA(liqEvent, existingPos) {
       console.warn(`[EXECUTOR] DCA could not fetch position for ${symbol}, using estimates`);
     }
 
-    // Recalculate SL from new avgPrice (shared risk budget)
-    // Use totalExpectedQty (full budget qty) for consistent SL distance
-    const maxLossUsd = getMaxLossPerPosition(activePositions.size);
-    const totalExpectedQty = instrumentCache.roundQty(symbol, existingPos.totalBudget / newAvgPrice);
-    let slOffset = maxLossUsd / totalExpectedQty;
+    // Recalculate SL from new avgPrice — ATR-based (proportional to trailing)
+    let slOffset;
+    if (existingPos.atr && existingPos.atr > 0) {
+      slOffset = existingPos.atr * config.slAtrMultiplier;
+    } else {
+      // Fallback: risk-budget SL
+      const maxLossUsd = getMaxLossPerPosition(activePositions.size);
+      const totalExpectedQty = instrumentCache.roundQty(symbol, existingPos.totalBudget / newAvgPrice);
+      slOffset = maxLossUsd / totalExpectedQty;
+    }
     if (inst.tickSize && slOffset < inst.tickSize) {
       slOffset = inst.tickSize;
     }
-    // Safety clamp: SL must never exceed 90% of avg price
     const maxSlOffset = newAvgPrice * 0.9;
     if (slOffset > maxSlOffset) {
       console.warn(`[EXECUTOR] DCA ${symbol} SL offset ${slOffset.toFixed(6)} > 90% of avgPrice ${newAvgPrice}, clamping`);
