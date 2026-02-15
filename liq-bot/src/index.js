@@ -41,6 +41,7 @@ async function main() {
   if (savedConfig) {
     if (savedConfig.minLiqValueUsd != null) config.minLiqValueUsd = savedConfig.minLiqValueUsd;
     if (savedConfig.maxPositions != null) config.maxPositions = savedConfig.maxPositions;
+    if (savedConfig.leverage != null) config.leverage = savedConfig.leverage;
     if (savedConfig.slAtrMultiplier != null) config.slAtrMultiplier = savedConfig.slAtrMultiplier;
     if (savedConfig.trailingAtrMultiplier != null) config.trailingAtrMultiplier = savedConfig.trailingAtrMultiplier;
     if (savedConfig.atrInterval != null) config.atrInterval = String(savedConfig.atrInterval);
@@ -177,7 +178,7 @@ async function main() {
   app.post('/api/config', (req, res) => {
     const updates = {};
 
-    const { minLiqValueUsd, maxPositions, slAtrMultiplier, trailingAtrMultiplier, atrInterval, entryOrderType, tpOrderType, minTurnover24h } = req.body;
+    const { minLiqValueUsd, maxPositions, leverage, slAtrMultiplier, trailingAtrMultiplier, atrInterval, entryOrderType, tpOrderType, minTurnover24h } = req.body;
 
     if (minLiqValueUsd != null && typeof minLiqValueUsd === 'number' && minLiqValueUsd >= 0) {
       const old = config.minLiqValueUsd;
@@ -191,6 +192,13 @@ async function main() {
       config.maxPositions = maxPositions;
       console.log(`[CONFIG] Max positions changed: ${old} → ${maxPositions}`);
       updates.maxPositions = maxPositions;
+    }
+
+    if (leverage != null && typeof leverage === 'number' && leverage >= 1) {
+      const old = config.leverage;
+      config.leverage = leverage;
+      console.log(`[CONFIG] Leverage changed: ${old}x → ${leverage}x`);
+      updates.leverage = leverage;
     }
 
     if (slAtrMultiplier != null && typeof slAtrMultiplier === 'number' && slAtrMultiplier > 0) {
