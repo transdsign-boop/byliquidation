@@ -340,10 +340,50 @@ export async function executeTrade(liqEvent) {
     // If shorts got liquidated (side='Sell'), price pumped -> we SELL (expect pullback)
     const tradeSide = side === 'Buy' ? 'Buy' : 'Sell';
 
-    // Calculate position size — must be at least MIN_POSITION_PCT% of initial balance (notional)
+    // Set one-way mode and leverage (only once per symbol)
+    const leverageStart = Date.now();
+    if (!leverageSet.has(symbol)) {
+      await switchToOneWayMode(symbol).catch(() => {});
+      const lev = Math.min(config.leverage, inst.maxLeverage);
+      await setLeverage(symbol, lev).catch(() => {});
+      leverageSet.add(symbol);
+    }
+    timing.leverage = Date.now() - leverageStart;
+
+    // --- Fetch ATR first (needed for both position sizing and SL/TP) ---
+
+    const atrStart = Date.now();
+    let atrValue = null;
+    let tpPrice, trailingStopDist;
+    let tpMethod = 'fixed';
+
+    try {
+      atrValue = await getATR(symbol);
+    } catch (err) {
+      console.error(`[EXECUTOR] ATR fetch error for ${symbol}:`, err.message);
+    }
+    timing.atr = Date.now() - atrStart;
+
+    // --- Position sizing: ATR-based to cap max loss per trade ---
+    const positionCount = activePositions.size + 1;
+    const maxLossUsd = getMaxLossPerPosition(positionCount);
+
+    // Default budget (balance-based)
     const minNotional = initialBalance * (config.minPositionPct / 100);
     const configNotional = config.positionSizeUsd * config.leverage;
-    const totalBudget = Math.max(configNotional, minNotional);
+    let totalBudget = Math.max(configNotional, minNotional);
+
+    // ATR-based cap: size position so full DCA hitting SL = maxLossUsd
+    if (atrValue && atrValue > 0) {
+      const slDist = atrValue * config.slAtrMultiplier;
+      const maxQty = maxLossUsd / slDist; // max coins where SL hit = maxLossUsd
+      const atrBudget = maxQty * price;
+      if (atrBudget < totalBudget) {
+        console.log(`[EXECUTOR] ${symbol} ATR sizing: budget $${totalBudget.toFixed(0)} → $${atrBudget.toFixed(0)} (capped by ${config.slAtrMultiplier}x ATR SL, max loss $${maxLossUsd.toFixed(2)})`);
+        totalBudget = atrBudget;
+      }
+    }
+
     const notional = totalBudget * DCA_SPLITS[0]; // 10% for first DCA entry
 
     const qty = instrumentCache.roundQty(
@@ -355,31 +395,6 @@ export async function executeTrade(liqEvent) {
       logTrade(liqEvent, 'SKIPPED', 'Qty below minimum', 0);
       return null;
     }
-
-    // Set one-way mode and leverage (only once per symbol)
-    const leverageStart = Date.now();
-    if (!leverageSet.has(symbol)) {
-      await switchToOneWayMode(symbol).catch(() => {});
-      const lev = Math.min(config.leverage, inst.maxLeverage);
-      await setLeverage(symbol, lev).catch(() => {});
-      leverageSet.add(symbol);
-    }
-    timing.leverage = Date.now() - leverageStart;
-
-    // --- Calculate TP and SL prices (ATR-based with fallback) ---
-
-    const atrStart = Date.now();
-    let atrValue = null;
-    let tpPrice, trailingStopDist;
-    let tpMethod = 'fixed';
-
-    // Try ATR-based TP
-    try {
-      atrValue = await getATR(symbol);
-    } catch (err) {
-      console.error(`[EXECUTOR] ATR fetch error for ${symbol}:`, err.message);
-    }
-    timing.atr = Date.now() - atrStart;
 
     if (atrValue && atrValue > 0) {
       // ATR-based TP: entry ± 1.5 × ATR
@@ -423,8 +438,6 @@ export async function executeTrade(liqEvent) {
 
     // Stop-loss: ATR-based (proportional to trailing stop for balanced risk/reward)
     // Fallback to risk-budget if ATR unavailable
-    const positionCount = activePositions.size + 1;
-    const maxLossUsd = getMaxLossPerPosition(positionCount);
     let slOffset;
     if (atrValue && atrValue > 0) {
       slOffset = atrValue * config.slAtrMultiplier;
