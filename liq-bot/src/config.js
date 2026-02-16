@@ -47,7 +47,7 @@ export const config = {
   atrPeriod: parseInt(process.env.ATR_PERIOD || '14'),
   atrInterval: process.env.ATR_INTERVAL || '1',
   tpAtrMultiplier: parseFloat(process.env.TP_ATR_MULTIPLIER || '1.5'),
-  slAtrMultiplier: parseFloat(process.env.SL_ATR_MULTIPLIER || '3'),
+  slAtrMultiplier: parseFloat(process.env.SL_ATR_MULTIPLIER || '1'),
   trailingAtrMultiplier: parseFloat(process.env.TRAILING_ATR_MULTIPLIER || '1.5'),
   dcaVwapSdMultiplier: parseFloat(process.env.DCA_VWAP_SD || '2'),
 
